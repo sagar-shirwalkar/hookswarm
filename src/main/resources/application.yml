@@ -7,9 +7,9 @@ spring:
       enabled: true
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/hookswarm
-    username: hookswarm
-    password: hookswarm
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/hookswarm}
+    username: ${SPRING_DATASOURCE_USERNAME:hookswarm}
+    password: ${SPRING_DATASOURCE_PASSWORD:hookswarm}
     hikari:
       maximum-pool-size: 20        # Default 10 is too low for concurrent virtual threads
       minimum-idle: 5              # Don't hold 20 connections when idle
@@ -78,8 +78,6 @@ logging:
     org.flywaydb: WARN
     com.zaxxer.hikari: WARN
     org.springframework.jdbc: WARN
-    # dev.hookswarm.delivery: DEBUG
-    # com.zaxxer.hikari.pool: DEBUG
 
 ---
 # Dev overrides

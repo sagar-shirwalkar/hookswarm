@@ -179,6 +179,9 @@ build/
 ### VS Code ###
 .vscode/
 
+### Local ###
+.env
+
 ### Some additional ignores (sort later)
 *.DS_Store
 *.sw?

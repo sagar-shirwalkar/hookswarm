@@ -1,19 +1,59 @@
 services:
+  caddy:
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    container_name: hookswarm-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    networks:
+      - hookswarm-net
+
+  app:
+    build: .
+    container_name: hookswarm-app
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      HOOKSWARM_THREADS_VIRTUAL_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - hookswarm-net
+
   postgres:
     image: postgres:16-alpine
+    container_name: hookswarm-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: hookswarm
-      POSTGRES_USER: hookswarm
-      POSTGRES_PASSWORD: hookswarm
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hookswarm"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - hookswarm-net
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  hookswarm-net:
+    driver: bridge
