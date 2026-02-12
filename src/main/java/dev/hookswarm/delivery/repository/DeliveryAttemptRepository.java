@@ -34,7 +34,7 @@ public class DeliveryAttemptRepository {
                 .param("responseBody", attempt.responseBody())
                 .param("latencyMs", attempt.latency().toMillis())
                 .param("errorMessage", attempt.errorMessage())
-                .param("attemptedAt", attempt.attemptedAt())
+                .param("attemptedAt", OffsetDateTime.ofInstant(attempt.attemptedAt(), java.time.ZoneId.of("UTC")))
                 .update();
     }
 

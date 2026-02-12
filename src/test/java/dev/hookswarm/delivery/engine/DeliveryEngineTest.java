@@ -27,46 +27,40 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+
 @ExtendWith(MockitoExtension.class)
 class DeliveryEngineTest {
 
-    @Mock
-    DeliveryTaskRepository taskRepository;
-    @Mock
-    SubscriptionRepository subscriptionRepository;
-    @Mock
-    DeadLetterRepository deadLetterRepository;
-    @Mock
-    DeliveryWorker worker;
-    @Mock
-    RetryPolicy retryPolicy;
-    @Mock
-    CircuitBreakerManager circuitBreakers;
-    @Mock
-    ExecutorService deliveryExecutor;
+    @Mock DeliveryTaskRepository taskRepository;
+    @Mock SubscriptionRepository subscriptionRepository;
+    @Mock DeadLetterRepository deadLetterRepository;
+    @Mock DeliveryWorker worker;
+    @Mock RetryPolicy retryPolicy;
+    @Mock CircuitBreakerManager circuitBreakers;
+    @Mock ExecutorService deliveryExecutor;
 
     private DeliveryEngine engine;
 
     @BeforeEach
     void setUp() {
         engine = new DeliveryEngine(
-                taskRepository,
-                subscriptionRepository,
-                deadLetterRepository,
-                worker,
-                retryPolicy,
-                circuitBreakers,
-                deliveryExecutor,
-                500
+                taskRepository, subscriptionRepository, deadLetterRepository,
+                worker, retryPolicy, circuitBreakers, deliveryExecutor, 500
         );
+    }
 
-        // Make executor run synchronously so assertions work
+
+    // HELPER: Call this in tests where tasks are actually dispatched to virtual threads.
+    // Makes the executor run synchronously so assertions work.
+    private void stubExecutorToRunSynchronously() {
         when(deliveryExecutor.submit(any(Runnable.class))).thenAnswer(invocation -> {
             Runnable task = invocation.getArgument(0);
             task.run();
             return null;
         });
     }
+
+    // Tests that don't dispatch
 
     @Test
     void poll_doesNothingWhenNoDueTasks() {
@@ -80,23 +74,8 @@ class DeliveryEngineTest {
     }
 
     @Test
-    void poll_dispatchesDeliverableTasks() {
+    void poll_revertsCircuitBrokenTasks_zeroAttempts_resetsToPending() {
         DeliveryTask task = TestFixtures.pendingTask();
-        when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
-                .thenReturn(List.of(task));
-        when(circuitBreakers.isOpen("sub_01")).thenReturn(false);
-        when(worker.deliver(task))
-                .thenReturn(DeliveryResult.success(200, Duration.ofMillis(50)));
-
-        engine.poll();
-
-        verify(worker).deliver(task);
-        verify(taskRepository).markDelivered(eq("task_01"), any());
-    }
-
-    @Test
-    void poll_revertsCircuitBrokenTasks_zerAttempts_resetsToPending() {
-        DeliveryTask task = TestFixtures.pendingTask(); // attemptCount = 0
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
                 .thenReturn(List.of(task));
         when(circuitBreakers.isOpen("sub_01")).thenReturn(true);
@@ -108,10 +87,9 @@ class DeliveryEngineTest {
                 eq("task_01"), any(Instant.class), any(Instant.class));
     }
 
-    // ADD — new test for the other branch
     @Test
-    void poll_revertsCircuitBrokenTasks_withAttempts_marksFaild() {
-        DeliveryTask task = TestFixtures.failedTask(3); // attemptCount = 3
+    void poll_revertsCircuitBrokenTasks_withAttempts_marksFailed() {
+        DeliveryTask task = TestFixtures.failedTask(3);
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
                 .thenReturn(List.of(task));
         when(circuitBreakers.isOpen("sub_01")).thenReturn(true);
@@ -123,8 +101,29 @@ class DeliveryEngineTest {
                 eq("task_01"), eq(3), any(Instant.class), any(Instant.class));
     }
 
+    // Tests that do dispatch
+
+    @Test
+    void poll_dispatchesDeliverableTasks() {
+        stubExecutorToRunSynchronously();  // ← only where needed
+
+        DeliveryTask task = TestFixtures.pendingTask();
+        when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
+                .thenReturn(List.of(task));
+        when(circuitBreakers.isOpen("sub_01")).thenReturn(false);
+        when(worker.deliver(task))
+                .thenReturn(DeliveryResult.success(200, Duration.ofMillis(50)));
+
+        engine.poll();
+
+        verify(worker).deliver(task);
+        verify(taskRepository).markDelivered(eq("task_01"), any(Instant.class));
+    }
+
     @Test
     void poll_mixOfDeliverableAndBlocked() {
+        stubExecutorToRunSynchronously();
+
         DeliveryTask deliverable = TestFixtures.pendingTask();
         DeliveryTask blocked = new DeliveryTask(
                 "task_02", "evt_02", "sub_02",
@@ -146,6 +145,8 @@ class DeliveryEngineTest {
 
     @Test
     void poll_onSuccess_marksDeliveredAndResetsCircuit() {
+        stubExecutorToRunSynchronously();
+
         DeliveryTask task = TestFixtures.pendingTask();
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
                 .thenReturn(List.of(task));
@@ -155,14 +156,16 @@ class DeliveryEngineTest {
 
         engine.poll();
 
-        verify(taskRepository).markDelivered(eq("task_01"), any());
+        verify(taskRepository).markDelivered(eq("task_01"), any(Instant.class));
         verify(circuitBreakers).recordSuccess("sub_01");
     }
 
     @Test
     void poll_onFailure_schedulesRetry() {
-        DeliveryTask task = TestFixtures.pendingTask(); // attemptCount = 0
-        Subscription sub = TestFixtures.subscription(); // maxRetries = 5
+        stubExecutorToRunSynchronously();
+
+        DeliveryTask task = TestFixtures.pendingTask();
+        Subscription sub = TestFixtures.subscription();
         Instant nextRetry = Instant.now().plusSeconds(30);
 
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
@@ -176,16 +179,19 @@ class DeliveryEngineTest {
 
         engine.poll();
 
-        verify(taskRepository).markFailed("task_01", 1, nextRetry, any());
+        // FIX: all matchers, not mixed with raw values
+        verify(taskRepository).markFailed(
+                eq("task_01"), eq(1), eq(nextRetry), any(Instant.class));
         verify(circuitBreakers).recordFailure("sub_01");
         verifyNoInteractions(deadLetterRepository);
     }
 
     @Test
     void poll_onMaxRetriesExhausted_movesToDLQ() {
-        // Task already failed 4 times, subscription maxRetries = 5
+        stubExecutorToRunSynchronously();
+
         DeliveryTask task = TestFixtures.failedTask(4);
-        Subscription sub = TestFixtures.subscription(); // maxRetries = 5
+        Subscription sub = TestFixtures.subscription();
 
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
                 .thenReturn(List.of(task));
@@ -197,10 +203,8 @@ class DeliveryEngineTest {
 
         engine.poll();
 
-        // Task marked dead
-        verify(taskRepository).markDead(eq("task_01"), eq(5), any());
+        verify(taskRepository).markDead(eq("task_01"), eq(5), any(Instant.class));
 
-        // DLQ entry created
         ArgumentCaptor<DeadLetterEntry> captor =
                 ArgumentCaptor.forClass(DeadLetterEntry.class);
         verify(deadLetterRepository).insert(captor.capture());
@@ -215,6 +219,8 @@ class DeliveryEngineTest {
 
     @Test
     void poll_onMaxRetriesExhausted_whenSubscriptionDeleted_usesDefault() {
+        stubExecutorToRunSynchronously();
+
         DeliveryTask task = TestFixtures.failedTask(4);
 
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
@@ -223,17 +229,18 @@ class DeliveryEngineTest {
         when(worker.deliver(task))
                 .thenReturn(DeliveryResult.error(Duration.ofMillis(10), "Connection refused"));
         when(subscriptionRepository.findById("sub_01"))
-                .thenReturn(Optional.empty()); // subscription deleted
+                .thenReturn(Optional.empty());
 
         engine.poll();
 
-        // Default maxRetries is 5, attempt 5 >= 5 -> DLQ
-        verify(taskRepository).markDead(eq("task_01"), eq(5), any());
+        verify(taskRepository).markDead(eq("task_01"), eq(5), any(Instant.class));
         verify(deadLetterRepository).insert(any());
     }
 
     @Test
     void poll_handlesUnexpectedWorkerException() {
+        stubExecutorToRunSynchronously();
+
         DeliveryTask task = TestFixtures.pendingTask();
         Subscription sub = TestFixtures.subscription();
 
@@ -247,7 +254,8 @@ class DeliveryEngineTest {
 
         engine.poll(); // should not throw
 
-        verify(taskRepository).markFailed(eq("task_01"), eq(1), any(), any());
+        verify(taskRepository).markFailed(
+                eq("task_01"), eq(1), any(Instant.class), any(Instant.class));
     }
 
 }

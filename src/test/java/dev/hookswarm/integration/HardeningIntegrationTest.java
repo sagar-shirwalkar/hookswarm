@@ -2,15 +2,6 @@ package dev.hookswarm.integration;
 
 
 import dev.hookswarm.common.IdGenerator;
-import dev.hookswarm.delivery.*;
-//import dev.hookswarm.event.Event;
-//import dev.hookswarm.event.EventRepository;
-//import dev.hookswarm.outbox.OutboxEntry;
-//import dev.hookswarm.outbox.OutboxPoller;
-//import dev.hookswarm.outbox.OutboxRepository;
-//import dev.hookswarm.subscription.Subscription;
-//import dev.hookswarm.subscription.SubscriptionRepository;
-//import dev.hookswarm.subscription.SubscriptionStatus;
 import dev.hookswarm.delivery.engine.DeliveryEngine;
 import dev.hookswarm.delivery.engine.StaleTaskRecoveryJob;
 import dev.hookswarm.delivery.model.DeliveryStatus;
@@ -29,7 +20,9 @@ import okhttp3.mockwebserver.MockWebServer;
 import org.junit.jupiter.api.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.testcontainers.shaded.org.awaitility.Awaitility;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
 
@@ -68,12 +61,8 @@ class HardeningIntegrationTest extends BaseIntegrationTest {
     }
 
     private void cleanDatabase() {
-        jdbc.sql("DELETE FROM dead_letter_queue").update();
-        jdbc.sql("DELETE FROM delivery_attempts").update();
-        jdbc.sql("DELETE FROM delivery_tasks").update();
-        jdbc.sql("DELETE FROM outbox").update();
-        jdbc.sql("DELETE FROM events").update();
-        jdbc.sql("DELETE FROM subscriptions").update();
+        // Order matters
+        jdbc.sql("TRUNCATE TABLE dead_letter_queue, delivery_attempts, delivery_tasks, outbox, events, subscriptions CASCADE").update();
     }
 
     //
@@ -86,42 +75,51 @@ class HardeningIntegrationTest extends BaseIntegrationTest {
     private TestSetup setupFailedDelivery(int maxRetries, int failureCount) {
         String webhookUrl = mockWebServer.url("/webhook").toString();
 
+        // UNIQUE event type per call — prevents cross-subscription fan-out
+        String eventType = "test.event." + IdGenerator.newId();
+
         Subscription sub = new Subscription(
                 IdGenerator.newId(), webhookUrl, IdGenerator.newSecret(),
-                Set.of("test.event"), SubscriptionStatus.ACTIVE,
+                Set.of(eventType), SubscriptionStatus.ACTIVE,
                 maxRetries, Instant.now(), Instant.now());
         subscriptionRepository.insert(sub);
 
         Event event = new Event(
-                IdGenerator.newId(), "test.event",
+                IdGenerator.newId(), eventType,
                 "{\"test\":true}", IdGenerator.newId(), Instant.now());
         eventRepository.insert(event);
 
         OutboxEntry outbox = new OutboxEntry(
-                IdGenerator.newId(), event.id(), "test.event",
+                IdGenerator.newId(), event.id(), eventType,
                 false, Instant.now(), null);
         outboxRepository.insert(outbox);
 
-        // Enqueue enough failures
         for (int i = 0; i < failureCount; i++) {
             mockWebServer.enqueue(new MockResponse().setResponseCode(500).setBody("fail"));
         }
 
-        // Create delivery task via outbox poller
         outboxPoller.poll();
 
-        // Run delivery attempts
+        Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            Long count = jdbc.sql("SELECT COUNT(*) FROM delivery_tasks WHERE event_id = :eventId")
+                    .param("eventId", event.id()).query(Long.class).single();
+            assertThat(count).isEqualTo(1);
+        });
+
         for (int i = 0; i < failureCount; i++) {
-            deliveryEngine.poll();
-            // Make retry immediately eligible
-            jdbc.sql("UPDATE delivery_tasks SET next_attempt_at = NOW() - INTERVAL '1 minute' WHERE status IN ('PENDING', 'FAILED')")
+            jdbc.sql("UPDATE delivery_tasks SET next_attempt_at = NOW() - INTERVAL '1 minute' WHERE status IN ('PENDING', 'FAILED') AND event_id = :eventId")
+                    .param("eventId", event.id())
                     .update();
+            deliveryEngine.poll();
+            final int expectedAttempts = i + 1;
+            Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+                Integer attempts = jdbc.sql("SELECT attempt_count FROM delivery_tasks WHERE event_id = :eventId")
+                        .param("eventId", event.id()).query(Integer.class).single();
+                assertThat(attempts).isEqualTo(expectedAttempts);
+            });
         }
 
-        String taskId = jdbc.sql("""
-                SELECT id FROM delivery_tasks
-                WHERE event_id = :eventId AND subscription_id = :subId
-                """)
+        String taskId = jdbc.sql("SELECT id FROM delivery_tasks WHERE event_id = :eventId AND subscription_id = :subId")
                 .param("eventId", event.id())
                 .param("subId", sub.id())
                 .query(String.class)
@@ -154,8 +152,9 @@ class HardeningIntegrationTest extends BaseIntegrationTest {
         deliveryEngine.poll();
 
         // Verify delivered
-        String statusAfter = getTaskStatus(setup.deliveryTaskId);
-        assertThat(statusAfter).isEqualTo("DELIVERED");
+        Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED")
+        );
 
         // Verify total attempts = 3 (2 failures + 1 success)
         Long totalAttempts = jdbc.sql("""
@@ -206,7 +205,9 @@ class HardeningIntegrationTest extends BaseIntegrationTest {
         deliveryEngine.poll();
 
         // Verify delivered
-        assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED");
+        Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED")
+        );
     }
 
     //
@@ -241,7 +242,10 @@ class HardeningIntegrationTest extends BaseIntegrationTest {
 
         // Deliver
         deliveryEngine.poll();
-        assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED");
+
+        Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED")
+        );
     }
 
     //
@@ -275,7 +279,9 @@ class HardeningIntegrationTest extends BaseIntegrationTest {
         mockWebServer.enqueue(new MockResponse().setResponseCode(200).setBody("ok"));
         deliveryEngine.poll();
 
-        assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED");
+        Awaitility.await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(getTaskStatus(setup.deliveryTaskId)).isEqualTo("DELIVERED")
+        );
     }
 
     @Test

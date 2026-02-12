@@ -58,4 +58,11 @@ public class GlobalExceptionHandler {
                 .body(ApiError.of(500, "Internal server error"));
     }
 
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<ApiError> handleIllegalState(IllegalStateException ex) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(ApiError.of(400, ex.getMessage()));
+    }
+
 }

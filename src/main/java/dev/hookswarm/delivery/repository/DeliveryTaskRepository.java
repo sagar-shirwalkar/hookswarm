@@ -12,11 +12,14 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 
 @Repository
 public class DeliveryTaskRepository {
+
+    private static final ZoneId UTC = ZoneId.of("UTC");
 
     private static final String INSERT_SQL = """
             INSERT INTO delivery_tasks
@@ -58,7 +61,6 @@ public class DeliveryTaskRepository {
 
     // Polling
 
-    //Atomically selects due tasks and marks them IN_FLIGHT, safe concurrent polling with FOR UPDATE SKIP LOCKED.
     @Transactional
     public List<DeliveryTask> findDueAndMarkInFlight(int limit, Instant now) {
         List<DeliveryTask> due = jdbc.sql("""
@@ -69,7 +71,7 @@ public class DeliveryTaskRepository {
                 LIMIT :limit
                 FOR UPDATE SKIP LOCKED
                 """)
-                .param("now", now)
+                .param("now", OffsetDateTime.ofInstant(now, UTC))
                 .param("limit", limit)
                 .query(ROW_MAPPER)
                 .list();
@@ -85,7 +87,7 @@ public class DeliveryTaskRepository {
                 """,
                 new MapSqlParameterSource()
                         .addValue("ids", ids)
-                        .addValue("now", now));
+                        .addValue("now", OffsetDateTime.ofInstant(now, UTC)));
 
         return due.stream()
                 .map(t -> new DeliveryTask(
@@ -104,7 +106,7 @@ public class DeliveryTaskRepository {
                 WHERE id = :id
                 """)
                 .param("id", id)
-                .param("now", now)
+                .param("now", OffsetDateTime.ofInstant(now, UTC))
                 .update();
     }
 
@@ -117,8 +119,8 @@ public class DeliveryTaskRepository {
                 """)
                 .param("id", id)
                 .param("attemptCount", attemptCount)
-                .param("nextAttemptAt", nextAttemptAt)
-                .param("now", now)
+                .param("nextAttemptAt", OffsetDateTime.ofInstant(nextAttemptAt, UTC)) // Fixed
+                .param("now", OffsetDateTime.ofInstant(now, UTC))
                 .update();
     }
 
@@ -130,7 +132,7 @@ public class DeliveryTaskRepository {
                 """)
                 .param("id", id)
                 .param("attemptCount", attemptCount)
-                .param("now", now)
+                .param("now", OffsetDateTime.ofInstant(now, UTC))
                 .update();
     }
 
@@ -148,8 +150,8 @@ public class DeliveryTaskRepository {
             WHERE id = :id
             """)
                 .param("id", id)
-                .param("nextAttemptAt", nextAttemptAt)
-                .param("now", now)
+                .param("nextAttemptAt", OffsetDateTime.ofInstant(nextAttemptAt, UTC)) // Fixed
+                .param("now", OffsetDateTime.ofInstant(now, UTC))
                 .update();
     }
 
@@ -199,13 +201,13 @@ public class DeliveryTaskRepository {
             LIMIT :limit
             FOR UPDATE SKIP LOCKED
             """)
-                .param("threshold", threshold)
+                .param("threshold", OffsetDateTime.ofInstant(threshold, UTC))
                 .param("limit", limit)
                 .query(ROW_MAPPER)
                 .list();
     }
 
-    // Full reset — used by DLQ replay. Clears attempt count for a fresh start
+    // Full reset, used by DLQ replay
 
     public void resetForReplay(String id, Instant now) {
         jdbc.sql("""
@@ -215,7 +217,7 @@ public class DeliveryTaskRepository {
             WHERE id = :id
             """)
                 .param("id", id)
-                .param("now", now)
+                .param("now", OffsetDateTime.ofInstant(now, UTC))
                 .update();
     }
 
@@ -228,9 +230,10 @@ public class DeliveryTaskRepository {
                 .addValue("subscriptionId", task.subscriptionId())
                 .addValue("status", task.status().name())
                 .addValue("attemptCount", task.attemptCount())
-                .addValue("nextAttemptAt", task.nextAttemptAt())
-                .addValue("createdAt", task.createdAt())
-                .addValue("updatedAt", task.updatedAt());
+                // FIX: These must also be OffsetDateTime for the batch insert to work
+                .addValue("nextAttemptAt", OffsetDateTime.ofInstant(task.nextAttemptAt(), UTC))
+                .addValue("createdAt", OffsetDateTime.ofInstant(task.createdAt(), UTC))
+                .addValue("updatedAt", OffsetDateTime.ofInstant(task.updatedAt(), UTC));
     }
 
 }

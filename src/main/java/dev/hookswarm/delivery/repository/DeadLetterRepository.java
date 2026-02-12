@@ -33,7 +33,7 @@ public class DeadLetterRepository {
                 .param("subscriptionId", entry.subscriptionId())
                 .param("totalAttempts", entry.totalAttempts())
                 .param("lastError", entry.lastError())
-                .param("deadAt", entry.deadAt())
+                .param("deadAt", OffsetDateTime.ofInstant(entry.deadAt(), java.time.ZoneId.of("UTC")))
                 .update();
     }
 

@@ -46,8 +46,8 @@ public class SubscriptionRepository {
                 .param("eventTypes", setToPgLiteral(subscription.eventTypes()))
                 .param("status", subscription.status().name())
                 .param("maxRetries", subscription.maxRetries())
-                .param("createdAt", subscription.createdAt())
-                .param("updatedAt", subscription.updatedAt())
+                .param("createdAt", java.time.OffsetDateTime.ofInstant(subscription.createdAt(), java.time.ZoneId.of("UTC")))
+                .param("updatedAt", java.time.OffsetDateTime.ofInstant(subscription.updatedAt(), java.time.ZoneId.of("UTC")))
                 .update();
     }
 
@@ -88,7 +88,7 @@ public class SubscriptionRepository {
                 .param("eventTypes", setToPgLiteral(subscription.eventTypes()))
                 .param("status", subscription.status().name())
                 .param("maxRetries", subscription.maxRetries())
-                .param("updatedAt", subscription.updatedAt())
+                .param("updatedAt", java.time.OffsetDateTime.ofInstant(subscription.updatedAt(), java.time.ZoneId.of("UTC")))
                 .update();
 
         if (rows == 0) {

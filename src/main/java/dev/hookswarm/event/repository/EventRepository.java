@@ -35,7 +35,7 @@ public class EventRepository {
                 .param("eventType", event.eventType())
                 .param("payload", event.payload())
                 .param("idempotencyKey", event.idempotencyKey())
-                .param("createdAt", event.createdAt())
+                .param("createdAt", OffsetDateTime.ofInstant(event.createdAt(), java.time.ZoneId.of("UTC")))
                 .update();
     }
 

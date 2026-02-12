@@ -21,7 +21,7 @@ public class OutboxRepository {
     private static final RowMapper<OutboxEntry> ROW_MAPPER = (rs, i) -> new OutboxEntry(
             rs.getString("id"),
             rs.getString("event_id"),
-            rs.getString("event_type"),      // ← add this
+            rs.getString("event_type"),
             rs.getBoolean("processed"),
             rs.getObject("created_at", OffsetDateTime.class).toInstant(),
             rs.getObject("processed_at", OffsetDateTime.class) != null
@@ -36,9 +36,9 @@ public class OutboxRepository {
             """)
                 .param("id", entry.id())
                 .param("eventId", entry.eventId())
-                .param("eventType", entry.eventType())  // ← add this
+                .param("eventType", entry.eventType())
                 .param("processed", entry.processed())
-                .param("createdAt", entry.createdAt())
+                .param("createdAt", OffsetDateTime.ofInstant(entry.createdAt(), java.time.ZoneId.of("UTC")))
                 .update();
     }
 
@@ -70,7 +70,7 @@ public class OutboxRepository {
                 WHERE id IN (:ids)
                 """)
                 .param("ids", ids)
-                .param("processedAt", processedAt)
+                .param("processedAt", OffsetDateTime.ofInstant(processedAt, java.time.ZoneId.of("UTC")))
                 .update();
     }
 

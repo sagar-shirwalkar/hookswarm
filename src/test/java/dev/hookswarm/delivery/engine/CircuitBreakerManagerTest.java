@@ -49,39 +49,44 @@ class CircuitBreakerManagerTest {
     }
 
     @Test
-    void openCircuit_transitionsToHalfOpenAfterDuration() {
-        // 0 seconds open duration → immediately transitions
-        CircuitBreakerManager cb = newManager(1, 0);
+    void openCircuit_transitionsToHalfOpenAfterDuration() throws InterruptedException {
+        CircuitBreakerManager cb = newManager(1, 1); // 1 second open duration
 
         cb.recordFailure(SUB_ID);
+        // Within 1 second, circuit is still OPEN
         assertThat(cb.isOpen(SUB_ID)).isTrue();
 
-        // Next check: open duration (0s) has elapsed → half-open → allows probe
+        // Wait for open duration to elapse
+        Thread.sleep(1100);
+
+        // Now transitions to HALF_OPEN (allows probe -> returns false)
         assertThat(cb.isOpen(SUB_ID)).isFalse();
     }
 
     @Test
-    void halfOpen_closesOnSuccess() {
-        CircuitBreakerManager cb = newManager(1, 0);
+    void halfOpen_closesOnSuccess() throws InterruptedException {
+        CircuitBreakerManager cb = newManager(1, 1);
 
         cb.recordFailure(SUB_ID);
-        // Trigger transition to HALF_OPEN
-        cb.isOpen(SUB_ID);
+        Thread.sleep(1100); // Transition to HALF_OPEN
+        cb.isOpen(SUB_ID);  // Trigger transition
 
         cb.recordSuccess(SUB_ID);
         assertThat(cb.isOpen(SUB_ID)).isFalse();
     }
 
     @Test
-    void halfOpen_reopensOnFailure() {
-        CircuitBreakerManager cb = newManager(1, 0);
+    void halfOpen_reopensOnFailure() throws InterruptedException {
+        CircuitBreakerManager cb = newManager(1, 1);
 
         cb.recordFailure(SUB_ID);
-        // Trigger transition to HALF_OPEN
-        cb.isOpen(SUB_ID);
-
-        cb.recordFailure(SUB_ID);  // probe failed → re-open
         assertThat(cb.isOpen(SUB_ID)).isTrue();
+
+        Thread.sleep(1100); // Transition to HALF_OPEN
+        assertThat(cb.isOpen(SUB_ID)).isFalse(); // HALF_OPEN allows probe
+
+        cb.recordFailure(SUB_ID); // probe failed → re-open
+        assertThat(cb.isOpen(SUB_ID)).isTrue(); // Back to OPEN (1 second timer restarts)
     }
 
     @Test
