@@ -28,14 +28,12 @@ public class OutboxPoller {
     private final OutboxRepository outboxRepository;
     private final SubscriptionRepository subscriptionRepository;
     private final DeliveryTaskRepository deliveryTaskRepository;
-
     private final int batchSize;
 
     public OutboxPoller(OutboxRepository outboxRepository,
                         SubscriptionRepository subscriptionRepository,
                         DeliveryTaskRepository deliveryTaskRepository,
-                        @Value("${hookswarm.outbox.batch-size:100}") int batchSize
-    ) {
+                        @Value("${hookswarm.outbox.batch-size:100}") int batchSize) {
         this.outboxRepository = outboxRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.deliveryTaskRepository = deliveryTaskRepository;

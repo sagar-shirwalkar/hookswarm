@@ -10,37 +10,85 @@ spring:
     url: jdbc:postgresql://localhost:5432/hookswarm
     username: hookswarm
     password: hookswarm
+    hikari:
+      maximum-pool-size: 20        # Default 10 is too low for concurrent virtual threads
+      minimum-idle: 5              # Don't hold 20 connections when idle
+      connection-timeout: 5000     # Fail fast if pool exhausted (ms)
+      idle-timeout: 300000         # Release idle connections after 5 min
+      max-lifetime: 1800000        # Recycle connections every 30 min
+      pool-name: hookswarm-pool    # Shows up in metrics and logs
 
   flyway:
     enabled: true
     locations: classpath:db/migration
 
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false    # Instant → "2025-01-15T10:00:00Z"
+      indent-output: false                # Compact JSON in responses
+    deserialization:
+      fail-on-unknown-properties: false   # Lenient on unknown fields in requests
+    default-property-inclusion: non_null   # Don't serialize null fields
+
 server:
   port: 8080
+  shutdown: graceful                       # Wait for in-flight requests on SIGTERM
+
+spring.lifecycle:
+  timeout-per-shutdown-phase: 30s          # Max wait during graceful shutdown
 
 hookswarm:
   outbox:
     poll-interval-ms: 500
     batch-size: 100
-
   delivery:
     poll-interval-ms: 1000
-    batch-size: 500
+    batch-size: 100                        # Reduced from 500 to match pool ratio
     timeout-connect-seconds: 5
     timeout-request-seconds: 10
-
   retry:
     base-delay-seconds: 10
     max-delay-seconds: 3600
     multiplier: 3
     jitter-factor: 0.2
-
   circuit-breaker:
     failure-threshold: 5
     open-duration-seconds: 60
+  recovery:
+    stale-threshold-minutes: 5
+    interval-ms: 60000
+    batch-size: 200
 
 management:
   endpoints:
     web:
       exposure:
-        include: health, info
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: hookswarm   # Tag all metrics for filtering
+
+logging:
+  level:
+    dev.hookswarm: INFO
+    org.springframework.scheduling: WARN
+    org.flywaydb: WARN
+    com.zaxxer.hikari: WARN
+    org.springframework.jdbc: WARN
+    # dev.hookswarm.delivery: DEBUG
+    # com.zaxxer.hikari.pool: DEBUG
+
+---
+# Dev overrides
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+logging:
+  level:
+    dev.hookswarm: DEBUG
+    org.springframework.jdbc.core: DEBUG

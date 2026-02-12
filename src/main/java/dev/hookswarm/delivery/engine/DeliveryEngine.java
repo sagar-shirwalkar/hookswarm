@@ -44,8 +44,7 @@ public class DeliveryEngine {
                           RetryPolicy retryPolicy,
                           CircuitBreakerManager circuitBreakers,
                           ExecutorService deliveryExecutor,
-                          @Value("${hookswarm.delivery.batch-size:500}") int batchSize
-    ) {
+                          @Value("${hookswarm.delivery.batch-size:500}") int batchSize) {
         this.taskRepository = taskRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.deadLetterRepository = deadLetterRepository;
@@ -156,14 +155,8 @@ public class DeliveryEngine {
     // Revert them to FAILED to preserving attempt count so the next poll after the circuit closes picks them up
     private void revertBlockedTasks(List<DeliveryTask> blocked, Instant now) {
         for (DeliveryTask task : blocked) {
-            DeliveryStatus revertStatus = task.attemptCount() == 0
-                    ? DeliveryStatus.PENDING
-                    : DeliveryStatus.FAILED;
-
-            if (revertStatus == DeliveryStatus.PENDING) {
-                // No markPending method, so using markFailed with same next_attempt_at
-                taskRepository.markFailed(task.id(), task.attemptCount(),
-                        task.nextAttemptAt(), now);
+            if (task.attemptCount() == 0) {
+                taskRepository.resetToPending(task.id(), task.nextAttemptAt(), now);
             } else {
                 taskRepository.markFailed(task.id(), task.attemptCount(),
                         task.nextAttemptAt(), now);

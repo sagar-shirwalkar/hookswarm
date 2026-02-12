@@ -1,5 +1,6 @@
 package dev.hookswarm.delivery.engine;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.hookswarm.common.IdGenerator;
 import dev.hookswarm.delivery.signing.WebhookSigner;
 import dev.hookswarm.delivery.model.DeliveryAttempt;
@@ -35,18 +36,35 @@ public class DeliveryWorker {
     private final DeliveryAttemptRepository attemptRepository;
     private final Duration requestTimeout;
 
+    private final ObjectMapper objectMapper;
+
     public DeliveryWorker(HttpClient webhookHttpClient,
                           WebhookSigner signer,
                           EventRepository eventRepository,
                           SubscriptionRepository subscriptionRepository,
                           DeliveryAttemptRepository attemptRepository,
+                          ObjectMapper objectMapper,
                           @Value("${hookswarm.delivery.timeout-request-seconds:10}") long requestTimeoutSeconds) {
         this.httpClient = webhookHttpClient;
         this.signer = signer;
         this.eventRepository = eventRepository;
         this.subscriptionRepository = subscriptionRepository;
         this.attemptRepository = attemptRepository;
+        this.objectMapper = objectMapper;
         this.requestTimeout = Duration.ofSeconds(requestTimeoutSeconds);
+    }
+
+    private String buildPayload(Event event) {
+        try {
+            var envelope = new java.util.LinkedHashMap<String, Object>();
+            envelope.put("id", event.id());
+            envelope.put("type", event.eventType());
+            envelope.put("timestamp", event.createdAt().toString());
+            envelope.put("data", objectMapper.readTree(event.payload()));
+            return objectMapper.writeValueAsString(envelope);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to build webhook payload", e);
+        }
     }
 
     // Delivers a single webhook. Always records a DeliveryAttempt, failures are captured in the DeliveryResult
@@ -124,17 +142,6 @@ public class DeliveryWorker {
             return DeliveryResult.error(latency,
                     e.getClass().getSimpleName() + ": " + e.getMessage());
         }
-    }
-
-    private String buildPayload(Event event) {
-        return """
-                {"id":"%s","type":"%s","timestamp":"%s","data":%s}\
-                """.formatted(
-                event.id(),
-                event.eventType(),
-                event.createdAt(),
-                event.payload()
-        );
     }
 
     private void recordAttempt(String taskId, int attemptNumber,

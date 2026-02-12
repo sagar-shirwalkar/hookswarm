@@ -1,8 +1,13 @@
 package dev.hookswarm.delivery.repository;
 
 import dev.hookswarm.delivery.model.DeliveryAttempt;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.util.List;
 
 @Repository
 public class DeliveryAttemptRepository {
@@ -31,6 +36,28 @@ public class DeliveryAttemptRepository {
                 .param("errorMessage", attempt.errorMessage())
                 .param("attemptedAt", attempt.attemptedAt())
                 .update();
+    }
+
+    private static final RowMapper<DeliveryAttempt> ROW_MAPPER = (rs, i) -> new DeliveryAttempt(
+            rs.getString("id"),
+            rs.getString("delivery_task_id"),
+            rs.getInt("attempt_number"),
+            rs.getInt("http_status_code"),
+            rs.getString("response_body"),
+            Duration.ofMillis(rs.getLong("latency_ms")),
+            rs.getString("error_message"),
+            rs.getObject("attempted_at", OffsetDateTime.class).toInstant()
+    );
+
+    public List<DeliveryAttempt> findByDeliveryTaskId(String deliveryTaskId) {
+        return jdbc.sql("""
+            SELECT * FROM delivery_attempts
+            WHERE delivery_task_id = :deliveryTaskId
+            ORDER BY attempt_number ASC
+            """)
+                .param("deliveryTaskId", deliveryTaskId)
+                .query(ROW_MAPPER)
+                .list();
     }
 
 }

@@ -1,6 +1,7 @@
 package dev.hookswarm.delivery.engine;
 
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.hookswarm.TestFixtures;
 import dev.hookswarm.delivery.model.DeliveryAttempt;
 import dev.hookswarm.delivery.model.DeliveryResult;
@@ -46,16 +47,21 @@ class DeliveryWorkerTest {
     private DeliveryWorker worker;
     private final WebhookSigner signer = new WebhookSigner();
 
+    @Mock
+    ObjectMapper objectMapper;
+
     @BeforeEach
     void setUp() {
         worker = new DeliveryWorker(
                 httpClient, signer, eventRepository,
-                subscriptionRepository, attemptRepository, 10);
+                subscriptionRepository, attemptRepository,
+                objectMapper, 10);
     }
 
     @Test
     @SuppressWarnings("unchecked")
     void deliver_successOn2xx() throws Exception {
+        stubObjectMapper();
         DeliveryTask task = TestFixtures.pendingTask();
         Event event = TestFixtures.event();
         Subscription sub = TestFixtures.subscription();
@@ -89,6 +95,7 @@ class DeliveryWorkerTest {
     @Test
     @SuppressWarnings("unchecked")
     void deliver_failureOnServerError() throws Exception {
+        stubObjectMapper();
         DeliveryTask task = TestFixtures.pendingTask();
         Event event = TestFixtures.event();
         Subscription sub = TestFixtures.subscription();
@@ -110,6 +117,7 @@ class DeliveryWorkerTest {
     @Test
     @SuppressWarnings("unchecked")
     void deliver_failureOn4xx() throws Exception {
+        stubObjectMapper();
         DeliveryTask task = TestFixtures.pendingTask();
 
         when(eventRepository.findById("evt_01")).thenReturn(Optional.of(TestFixtures.event()));
@@ -128,6 +136,7 @@ class DeliveryWorkerTest {
     @Test
     @SuppressWarnings("unchecked")
     void deliver_handlesConnectionError() throws Exception {
+        stubObjectMapper();
         DeliveryTask task = TestFixtures.pendingTask();
 
         when(eventRepository.findById("evt_01")).thenReturn(Optional.of(TestFixtures.event()));
@@ -168,6 +177,7 @@ class DeliveryWorkerTest {
 
     @Test
     void deliver_recordsAttemptOnConnectionError() throws Exception {
+        stubObjectMapper();
         DeliveryTask task = TestFixtures.failedTask(2); // already failed twice
 
         when(eventRepository.findById("evt_01")).thenReturn(Optional.of(TestFixtures.event()));
@@ -189,6 +199,7 @@ class DeliveryWorkerTest {
     @Test
     @SuppressWarnings("unchecked")
     void deliver_sendsHmacSignatureHeader() throws Exception {
+        stubObjectMapper();
         DeliveryTask task = TestFixtures.pendingTask();
 
         when(eventRepository.findById("evt_01")).thenReturn(Optional.of(TestFixtures.event()));
@@ -213,6 +224,18 @@ class DeliveryWorkerTest {
         assertThat(sent.headers().firstValue("X-HookSwarm-Delivery-Id"))
                 .isPresent()
                 .get().asString().isEqualTo("task_01");
+    }
+
+    private void stubObjectMapper() throws Exception {
+        // When readTree is called with any string, return a valid JsonNode
+        com.fasterxml.jackson.databind.JsonNode mockNode =
+                new com.fasterxml.jackson.databind.ObjectMapper()
+                        .readTree("{\"orderId\":\"ORD-123\",\"amount\":99.99}");
+        when(objectMapper.readTree(anyString())).thenReturn(mockNode);
+
+        // When writeValueAsString is called, return a valid JSON string
+        when(objectMapper.writeValueAsString(any())).thenReturn(
+                "{\"id\":\"evt_01\",\"type\":\"order.created\",\"timestamp\":\"2025-01-15T10:00:00Z\",\"data\":{\"orderId\":\"ORD-123\"}}");
     }
 
 }

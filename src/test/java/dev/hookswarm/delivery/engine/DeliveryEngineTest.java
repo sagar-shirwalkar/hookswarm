@@ -95,8 +95,8 @@ class DeliveryEngineTest {
     }
 
     @Test
-    void poll_revertsCircuitBrokenTasks() {
-        DeliveryTask task = TestFixtures.pendingTask();
+    void poll_revertsCircuitBrokenTasks_zerAttempts_resetsToPending() {
+        DeliveryTask task = TestFixtures.pendingTask(); // attemptCount = 0
         when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
                 .thenReturn(List.of(task));
         when(circuitBreakers.isOpen("sub_01")).thenReturn(true);
@@ -104,9 +104,23 @@ class DeliveryEngineTest {
         engine.poll();
 
         verifyNoInteractions(worker);
-        // Task should be reverted to previous status
+        verify(taskRepository).resetToPending(
+                eq("task_01"), any(Instant.class), any(Instant.class));
+    }
+
+    // ADD — new test for the other branch
+    @Test
+    void poll_revertsCircuitBrokenTasks_withAttempts_marksFaild() {
+        DeliveryTask task = TestFixtures.failedTask(3); // attemptCount = 3
+        when(taskRepository.findDueAndMarkInFlight(anyInt(), any()))
+                .thenReturn(List.of(task));
+        when(circuitBreakers.isOpen("sub_01")).thenReturn(true);
+
+        engine.poll();
+
+        verifyNoInteractions(worker);
         verify(taskRepository).markFailed(
-                eq("task_01"), eq(0), any(Instant.class), any(Instant.class));
+                eq("task_01"), eq(3), any(Instant.class), any(Instant.class));
     }
 
     @Test

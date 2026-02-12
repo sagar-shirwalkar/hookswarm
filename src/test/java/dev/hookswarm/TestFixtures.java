@@ -1,5 +1,7 @@
 package dev.hookswarm;
 
+import dev.hookswarm.delivery.model.DeadLetterEntry;
+import dev.hookswarm.delivery.model.DeliveryAttempt;
 import dev.hookswarm.delivery.model.DeliveryStatus;
 import dev.hookswarm.delivery.model.DeliveryTask;
 import dev.hookswarm.event.model.Event;
@@ -7,6 +9,7 @@ import dev.hookswarm.outbox.OutboxEntry;
 import dev.hookswarm.subscription.model.Subscription;
 import dev.hookswarm.subscription.model.SubscriptionStatus;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Set;
 
@@ -86,6 +89,70 @@ public final class TestFixtures {
                 false,
                 NOW,
                 null
+        );
+    }
+
+    public static DeliveryTask inFlightTask(int attemptCount, Instant updatedAt) {
+        return new DeliveryTask(
+                "task_01",
+                "evt_01",
+                "sub_01",
+                DeliveryStatus.IN_FLIGHT,
+                attemptCount,
+                NOW,
+                NOW,
+                updatedAt
+        );
+    }
+
+    public static DeliveryTask deadTask() {
+        return new DeliveryTask(
+                "task_01",
+                "evt_01",
+                "sub_01",
+                DeliveryStatus.DEAD,
+                5,
+                NOW,
+                NOW,
+                NOW
+        );
+    }
+
+    public static DeliveryTask deliveredTask() {
+        return new DeliveryTask(
+                "task_01",
+                "evt_01",
+                "sub_01",
+                DeliveryStatus.DELIVERED,
+                1,
+                NOW,
+                NOW,
+                NOW
+        );
+    }
+
+    public static DeadLetterEntry deadLetterEntry() {
+        return new DeadLetterEntry(
+                "dlq_01",
+                "task_01",
+                "evt_01",
+                "sub_01",
+                5,
+                "HTTP 503",
+                NOW
+        );
+    }
+
+    public static DeliveryAttempt attempt(String taskId, int attemptNumber, int statusCode) {
+        return new DeliveryAttempt(
+                "att_" + attemptNumber,
+                taskId,
+                attemptNumber,
+                statusCode,
+                statusCode >= 200 && statusCode < 300 ? "{\"ok\":true}" : "error",
+                Duration.ofMillis(50 + attemptNumber * 10),
+                statusCode >= 200 && statusCode < 300 ? null : "HTTP " + statusCode,
+                NOW.plusSeconds(attemptNumber * 30L)
         );
     }
 

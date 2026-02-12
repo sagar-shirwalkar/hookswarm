@@ -1,8 +1,13 @@
 package dev.hookswarm.delivery.repository;
 
 import dev.hookswarm.delivery.model.DeadLetterEntry;
+import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+
+import java.time.OffsetDateTime;
+import java.util.List;
+import java.util.Optional;
 
 @Repository
 public class DeadLetterRepository {
@@ -30,6 +35,55 @@ public class DeadLetterRepository {
                 .param("lastError", entry.lastError())
                 .param("deadAt", entry.deadAt())
                 .update();
+    }
+
+    private static final RowMapper<DeadLetterEntry> ROW_MAPPER = (rs, i) -> new DeadLetterEntry(
+            rs.getString("id"),
+            rs.getString("delivery_task_id"),
+            rs.getString("event_id"),
+            rs.getString("subscription_id"),
+            rs.getInt("total_attempts"),
+            rs.getString("last_error"),
+            rs.getObject("dead_at", OffsetDateTime.class).toInstant()
+    );
+
+    public Optional<DeadLetterEntry> findById(String id) {
+        return jdbc.sql("SELECT * FROM dead_letter_queue WHERE id = :id")
+                .param("id", id)
+                .query(ROW_MAPPER)
+                .optional();
+    }
+
+    public List<DeadLetterEntry> findAll(int limit, int offset) {
+        return jdbc.sql("""
+            SELECT * FROM dead_letter_queue
+            ORDER BY dead_at DESC
+            LIMIT :limit OFFSET :offset
+            """)
+                .param("limit", limit)
+                .param("offset", offset)
+                .query(ROW_MAPPER)
+                .list();
+    }
+
+    public long count() {
+        return jdbc.sql("SELECT COUNT(*) FROM dead_letter_queue")
+                .query(Long.class)
+                .single();
+    }
+
+    public boolean deleteById(String id) {
+        int rows = jdbc.sql("DELETE FROM dead_letter_queue WHERE id = :id")
+                .param("id", id)
+                .update();
+        return rows > 0;
+    }
+
+    public boolean deleteByDeliveryTaskId(String deliveryTaskId) {
+        int rows = jdbc.sql("DELETE FROM dead_letter_queue WHERE delivery_task_id = :deliveryTaskId")
+                .param("deliveryTaskId", deliveryTaskId)
+                .update();
+        return rows > 0;
     }
 
 }

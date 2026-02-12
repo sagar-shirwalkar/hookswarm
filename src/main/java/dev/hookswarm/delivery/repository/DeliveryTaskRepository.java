@@ -85,7 +85,7 @@ public class DeliveryTaskRepository {
                 """,
                 new MapSqlParameterSource()
                         .addValue("ids", ids)
-                        .addValue("now", Instant.from(now)));
+                        .addValue("now", now));
 
         return due.stream()
                 .map(t -> new DeliveryTask(
@@ -139,6 +139,84 @@ public class DeliveryTaskRepository {
                 .param("id", id)
                 .query(ROW_MAPPER)
                 .optional();
+    }
+
+    public void resetToPending(String id, Instant nextAttemptAt, Instant now) {
+        jdbc.sql("""
+            UPDATE delivery_tasks
+            SET status = 'PENDING', next_attempt_at = :nextAttemptAt, updated_at = :now
+            WHERE id = :id
+            """)
+                .param("id", id)
+                .param("nextAttemptAt", nextAttemptAt)
+                .param("now", now)
+                .update();
+    }
+
+    public List<DeliveryTask> findByEventId(String eventId) {
+        return jdbc.sql("""
+            SELECT * FROM delivery_tasks
+            WHERE event_id = :eventId
+            ORDER BY created_at DESC
+            """)
+                .param("eventId", eventId)
+                .query(ROW_MAPPER)
+                .list();
+    }
+
+    public List<DeliveryTask> findBySubscriptionId(String subscriptionId, int limit, int offset) {
+        return jdbc.sql("""
+            SELECT * FROM delivery_tasks
+            WHERE subscription_id = :subscriptionId
+            ORDER BY created_at DESC
+            LIMIT :limit OFFSET :offset
+            """)
+                .param("subscriptionId", subscriptionId)
+                .param("limit", limit)
+                .param("offset", offset)
+                .query(ROW_MAPPER)
+                .list();
+    }
+
+    public long countBySubscriptionId(String subscriptionId) {
+        return jdbc.sql("""
+            SELECT COUNT(*) FROM delivery_tasks
+            WHERE subscription_id = :subscriptionId
+            """)
+                .param("subscriptionId", subscriptionId)
+                .query(Long.class)
+                .single();
+    }
+
+    // Stale recovery
+
+    public List<DeliveryTask> findStaleInFlight(Instant threshold, int limit) {
+        return jdbc.sql("""
+            SELECT * FROM delivery_tasks
+            WHERE status = 'IN_FLIGHT'
+              AND updated_at < :threshold
+            ORDER BY updated_at ASC
+            LIMIT :limit
+            FOR UPDATE SKIP LOCKED
+            """)
+                .param("threshold", threshold)
+                .param("limit", limit)
+                .query(ROW_MAPPER)
+                .list();
+    }
+
+    // Full reset — used by DLQ replay. Clears attempt count for a fresh start
+
+    public void resetForReplay(String id, Instant now) {
+        jdbc.sql("""
+            UPDATE delivery_tasks
+            SET status = 'PENDING', attempt_count = 0,
+                next_attempt_at = :now, updated_at = :now
+            WHERE id = :id
+            """)
+                .param("id", id)
+                .param("now", now)
+                .update();
     }
 
     // Helpers
