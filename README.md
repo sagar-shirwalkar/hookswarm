@@ -1,23 +1,171 @@
 # **HookSwarm**
 
-HookSwarm is a fast Webhook Delivery engine which runs Event-Hooks en masse with Java 21's Virtual Threads, ensuring critical message delivery to subscribers at scale.
+HookSwarm is a high-performance webhook delivery system built on **Java 21**, **Spring WebFlux/Netty**, **R2DBC**, and **DragonflyDB** as cache and active queue.
 
-HookSwarm is built on a fully reactive stack: Spring WebFlux, R2DBC, and DragonflyDB (a high‑performance, Redis‑compatible in‑memory store). This architecture eliminates thread blocking and allows it to handle high concurrency with minimal resources, without the operational complexity of managing Kafka and massive streaming clusters.
+It is designed to reliably fan out events to hundreds of thousands of subscribers with sub‑100ms latency, while maintaining exactly‑once delivery semantics and surviving downstream failures through intelligent retries, circuit breakers, and a dead‑letter queue.
+
+## **Features**
+
+- **Asynchronous, non‑blocking event ingestion** that never blocks the caller.
+- **Reliable fan‑out** to all active subscriptions, even for events with thousands of subscribers. Spikes handled with backpressure and a dual-stream approach with Dragonfly.
+- **Exponential backoff retries** with configurable jitter.
+- **Per‑endpoint circuit breakers** to isolate failing destinations.
+- **Dead‑letter queue** for messages that exceed retry limits.
+- **Comprehensive observability** via Micrometer metrics and structured logging.
+- **Fine‑grained control:** All policies (retry, circuit breaker, concurrency limits) are fully configurable and can be tuned per tenant.
+
+All of this is achieved with a fully reactive stack, which can deliver high throughput and low latency even on modest hardware.
+
+**[Vue UI is still under development. The entire application is intended to run in one container, with a Caddy reverse proxy]**
+
+## **Event Lifecycle**
+
+```mermaid
+graph TD
+    subgraph "Event Ingestion"
+        API[POST /api/v1/events] --> PG[(PostgreSQL: events)]
+        API --> EventStream[("Dragonfly: events stream")]
+    end
+
+    EventStream -->|Read| Fanout[ReactiveEventFanoutConsumer]
+
+    subgraph "Fan-out & Caching"
+        Fanout -->|Check cache| Cache[("Dragonfly: subscription cache")]
+        Cache -.->|Cache miss| SubDB[(PostgreSQL: subscriptions)]
+        Fanout -->|Route| NormalStream[("Dragonfly: deliveries.normal")]
+        Fanout -->|Route| LargeStream[("Dragonfly: deliveries.large")]
+    end
+
+    NormalStream -->|Read| BatchWriter[ReactiveBatchWriter]
+    BatchWriter -->|Batch insert| TaskDB[(PostgreSQL: delivery_tasks)]
+
+    NormalStream -->|Read| Delivery1[ReactiveDeliveryConsumer]
+    LargeStream -->|Read| Delivery1
+    Delivery1 -->|Verify task exists| TaskDB
+    Delivery1 -->|Fetch subscription| SubDB
+    Delivery1 -->|HTTP POST| Target[Subscriber Endpoint]
+    Delivery1 -->|Record attempt| AttemptDB[(PostgreSQL: delivery_attempts)]
+    Delivery1 -->|Update task status| TaskDB
+    Delivery1 -->|If retries exhausted| DLQ[(PostgreSQL: dead_letter_queue)]
+
+    style API fill:#f9f,stroke:#333,stroke-width:2px
+    style Fanout fill:#bbf,stroke:#333,stroke-width:2px
+    style BatchWriter fill:#bbf,stroke:#333,stroke-width:2px
+    style Delivery1 fill:#bbf,stroke:#333,stroke-width:2px
+    style PG fill:#dfd,stroke:#333,stroke-width:2px
+    style SubDB fill:#dfd,stroke:#333,stroke-width:2px
+    style TaskDB fill:#dfd,stroke:#333,stroke-width:2px
+    style AttemptDB fill:#dfd,stroke:#333,stroke-width:2px
+    style DLQ fill:#dfd,stroke:#333,stroke-width:2px
+    style EventStream fill:#ffd,stroke:#333,stroke-width:2px
+    style NormalStream fill:#ffd,stroke:#333,stroke-width:2px
+    style LargeStream fill:#ffd,stroke:#333,stroke-width:2px
+    style Cache fill:#ffd,stroke:#333,stroke-width:2px
+```
+
+
+
+## **API Examples**
+
+All endpoints are reactive and return JSON. Below are illustrative examples.
+
+### Ingest an Event
+
+```
+POST /api/v1/events
+Content-Type: application/json
+{
+  "eventType": "invoice.paid",
+  "payload": {
+    "invoiceId": "inv_123",
+    "amount": 2999
+  },
+  "idempotencyKey": "req_abc123"
+}
+```
+
+Response (201 Created):
+```json
+{
+  "id": "01J0X7K2Q5Z8P9M4N2L6B3T1V",
+  "eventType": "invoice.paid",
+  "payload": {...},
+  "idempotencyKey": "req_abc123",
+  "createdAt": "2025-03-15T10:30:45Z"
+}
+```
+
+### Create a Subscription
+
+```
+POST /api/v1/subscriptions
+Content-Type: application/json
+{
+  "url": "https://api.acme.com/webhook",
+  "secret": "whsec_abc123...",
+  "eventTypes": ["invoice.paid", "customer.created"],
+  "maxRetries": 10
+}
+```
+
+Response (201 Created):
+```json
+{
+  "id": "01J0X7K2Q5Z8P9M4N2L6B3T1V",
+  "url": "https://api.acme.com/webhook",
+  "eventTypes": ["invoice.paid", "customer.created"],
+  "status": "ACTIVE",
+  "maxRetries": 10,
+  "createdAt": "2025-03-15T10:35:12Z"
+}
+```
+
+### List Deliveries for an Event
+
+```
+GET /api/v1/deliveries?eventId=01J0X7K2Q5Z8P9M4N2L6B3T1V
+```
+
+Response (200 OK):
+```json
+[
+  {
+    "id": "01J0X7K3M6N9B4V5C2X8Z1L7",
+    "eventId": "01J0X7K2Q5Z8P9M4N2L6B3T1V",
+    "subscriptionId": "01J0X7K2Q5Z8P9M4N2L6B3T1V",
+    "status": "DELIVERED",
+    "attemptCount": 1,
+    "createdAt": "2025-03-15T10:30:46Z"
+  }
+]
+```
+
+### Inspect Delivery Attempts
+
+```
+GET /api/v1/deliveries/01J0X7K3M6N9B4V5C2X8Z1L7/attempts
+```
+
+Response:
+```json
+[
+  {
+    "id": "01J0X7K4R8P2M6N9B3V5C1X2",
+    "attemptNumber": 1,
+    "httpStatusCode": 200,
+    "responseBody": "OK",
+    "latencyMs": 124,
+    "attemptedAt": "2025-03-15T10:30:47Z"
+  }
+]
+```
+
+### Replay a Dead‑Letter Entry
+
+```
+POST /api/v1/dlq/01J0X7K5T9P4M7N2B6V8C3X5/replay
+```
+
+Response (202 Accepted) – returns the newly created delivery task.
 
 ---
-
-## **Batteries-included features**
-
-- Ingestion: HookSwarm publishes events to a Dragonfly "Ingest" stream, while simultaneously running Idempotent event-related persistence on PostgreSQL.
-
-- Fan-out with reactive consumers reading the Ingest steam, while checking active subscriptions with R2DBC queries. Message published to a second Dragonfly "Delivery" stream.
-
-- POST requests to subscribers generated with Spring's non-blocking WebClient, by yet another reactive consumer picking up messages from the Deliveries stream. All attempts are recorded, with automatic exponential-backoff retries with jitter and Dead Letter Queue for failures.
-
-- Resilience: All system operations including event processing, delivery, circuit-breaking, retry queues and the DLQ are non-blocking. HookSwarm stays responsive even when downstream services are stressed or failing.
-
-- Monitoring Dashboard: Work in Progress
-
-- Metrics and Observability: Built-in with Spring Actuator, to be added as a dashboard
-
-- Records and Audit support: Configurable retention policies, supporting audit trails and compliance needs.

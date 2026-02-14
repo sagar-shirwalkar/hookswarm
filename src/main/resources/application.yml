@@ -80,6 +80,11 @@ hookswarm:
     timeout: 2s
 
   fanout:
+    max-pending-deliveries: 10000
+    large-subscription-threshold: 100
+    normal-stream: deliveries.normal
+    large-stream: deliveries.large
+    backpressure-delay-ms: 100
     poll-batch-size: 50
     poll-block-timeout-ms: 1000
     concurrency: 4
