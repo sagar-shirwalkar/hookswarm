@@ -1,0 +1,15 @@
+# For local development without a domain, just use:
+:80 {
+    root * /usr/share/caddy
+    file_server
+    
+    # SPA fallback if file not found, serve index.html
+    try_files {path} /index.html
+    
+    # API proxy
+    handle /api/* {
+        reverse_proxy app:8080
+    }
+    
+    encode gzip zstd
+}

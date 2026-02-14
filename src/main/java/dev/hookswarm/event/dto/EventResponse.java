@@ -3,14 +3,14 @@ package dev.hookswarm.event.dto;
 import com.fasterxml.jackson.annotation.JsonRawValue;
 import dev.hookswarm.event.model.Event;
 
-import java.time.Instant;
+import java.time.OffsetDateTime;
 
 public record EventResponse(
         String id,
         String eventType,
-        @JsonRawValue String payload,   // inlined as raw JSON, not a quoted string
+        @JsonRawValue String payload,   // inlined as raw JSON, not a quoted string // Object payload if deserialized
         String idempotencyKey,
-        Instant createdAt
+        OffsetDateTime createdAt
 ) {
 
     public static EventResponse from(Event event) {

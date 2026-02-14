@@ -1,22 +1,31 @@
 package dev.hookswarm.delivery.model;
 
+
 import java.time.Instant;
+import java.time.OffsetDateTime;
 
 public record DeliveryTaskResponse(
         String id,
         String eventId,
         String subscriptionId,
-        DeliveryStatus status,
+        String url,               // maybe you don't want to expose full URL? up to you
+        String status,
         int attemptCount,
-        Instant nextAttemptAt,
-        Instant createdAt,
-        Instant updatedAt
+        OffsetDateTime nextAttemptAt,
+        OffsetDateTime createdAt,
+        OffsetDateTime updatedAt
 ) {
     public static DeliveryTaskResponse from(DeliveryTask task) {
         return new DeliveryTaskResponse(
-                task.id(), task.eventId(), task.subscriptionId(),
-                task.status(), task.attemptCount(), task.nextAttemptAt(),
-                task.createdAt(), task.updatedAt()
+                task.id(),
+                task.eventId(),
+                task.subscriptionId(),
+                task.url(),
+                task.status().name(),
+                task.attemptCount(),
+                task.nextAttemptAt(),
+                task.createdAt(),
+                task.updatedAt()
         );
     }
 }

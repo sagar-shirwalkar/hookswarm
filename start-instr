@@ -1,0 +1,7 @@
+# Build and start everything
+docker-compose up -d
+
+# Rebuild the frontend volume
+docker-compose run --rm frontend-builder
+# Then reload Caddy (graceful)
+docker-compose exec caddy caddy reload --config /etc/caddy/Caddyfile

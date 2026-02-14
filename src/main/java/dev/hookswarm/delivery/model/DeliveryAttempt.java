@@ -1,15 +1,17 @@
 package dev.hookswarm.delivery.model;
 
-import java.time.Duration;
-import java.time.Instant;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+import java.time.OffsetDateTime;
 
+@Table("delivery_attempts")
 public record DeliveryAttempt(
-        String id,
+        @Id String id,
         String deliveryTaskId,
         int attemptNumber,
-        int httpStatusCode,
+        Integer httpStatusCode,
         String responseBody,
-        Duration latency,
+        long latencyMs,
         String errorMessage,
-        Instant attemptedAt
+        OffsetDateTime attemptedAt
 ) {}

@@ -1,11 +1,15 @@
 package dev.hookswarm.event.model;
 
-import java.time.Instant;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
 
+import java.time.OffsetDateTime;
+
+@Table("events")
 public record Event(
-        String id,
+        @Id String id,
         String eventType,
-        String payload,         // stored as JSON string, column is JSONB
-        String idempotencyKey,  // nullable, client-provided for dedup
-        Instant createdAt
+        String payload,          // JSONB – stored as TEXT, driver handles conversion
+        String idempotencyKey,
+        OffsetDateTime createdAt
 ) {}

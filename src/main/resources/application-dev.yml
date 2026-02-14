@@ -1,19 +1,14 @@
 spring:
   application:
     name: hookswarm
-
-  profiles:
-    active: dev
-
   netty:
     leak-detection: SIMPLE
-
   threads:
     virtual:
       enabled: true
 
   r2dbc:
-    url: r2dbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hookswarm}
+    url: r2dbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hookswarm}
     username: ${POSTGRES_USER:hookswarm}
     password: ${POSTGRES_PASSWORD:hookswarm}
     pool:
@@ -35,7 +30,7 @@ spring:
 
   data:
     redis:
-      host: ${DRAGONFLY_HOST:dragonfly}
+      host: localhost
       port: ${DRAGONFLY_PORT:6379}
       password: ${DRAGONFLY_PASSWORD:}
       database: 0
@@ -71,31 +66,23 @@ spring.lifecycle:
   timeout-per-shutdown-phase: 30s
 
 hookswarm:
-
   dragonfly:
-    host: dragonfly
+    host: localhost
     port: 6379
-    password:
+    password: ${DRAGONFLY_PASSWORD:}
     database: 0
     timeout: 2s
 
   fanout:
-    poll-batch-size: 50
-    poll-block-timeout-ms: 1000
+    poll-batch-size: 20
+    poll-block-timeout-ms: 2000
     concurrency: 4
 
   delivery:
-    poll-batch-size: 50
-    poll-block-timeout-ms: 1000
-    concurrency: 50
+    poll-batch-size: 20
+    poll-block-timeout-ms: 2000
+    concurrency: 5
     http-timeout-seconds: 10
-
-  webclient:
-    max-connections: 500
-    pending-acquire-timeout: 5s
-    max-idle-time: 20s
-    max-life-time: 60s
-    eviction-interval: 30s
 
   retry:
     base-delay-seconds: 10
@@ -117,31 +104,17 @@ management:
     web:
       exposure:
         include: health, info, metrics, prometheus
-      base-path: /actuator
   endpoint:
     health:
       show-details: always
-      probes:
-        enabled: true
   metrics:
     tags:
-      application: ${spring.application.name}
-      instance: ${HOSTNAME:unknown}
-    distribution:
-      percentiles-histogram:
-        http.server.requests: true
-      slo:
-        http.server.requests: 10ms,50ms,100ms,200ms,500ms,1s,2s
-
+      application: hookswarm
 
 logging:
   level:
-    root: INFO
-    dev.hookswarm: ${LOG_LEVEL:INFO}
-    org.springframework.data.r2dbc: WARN
-    io.r2dbc.postgresql.QUERY: ${SQL_LOG_LEVEL:WARN}
-    org.flywaydb: WARN
-    reactor.netty: WARN
-    io.lettuce.core: WARN
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+    dev.hookswarm: DEBUG
+    org.springframework.data.r2dbc: DEBUG
+    io.r2dbc.postgresql.QUERY: DEBUG
+    org.flywaydb: DEBUG
+    reactor.netty: DEBUG

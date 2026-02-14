@@ -1,13 +1,16 @@
 package dev.hookswarm.delivery.model;
 
-import java.time.Instant;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.relational.core.mapping.Table;
+import java.time.OffsetDateTime;
 
+@Table("dead_letter_queue")
 public record DeadLetterEntry(
-        String id,
+        @Id String id,
         String deliveryTaskId,
         String eventId,
         String subscriptionId,
         int totalAttempts,
         String lastError,
-        Instant deadAt
+        OffsetDateTime deadAt
 ) {}
