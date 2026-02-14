@@ -91,7 +91,7 @@ hookswarm:
     http-timeout-seconds: 10
 
   webclient:
-    max-connections: 500
+    max-connections: 1000
     pending-acquire-timeout: 5s
     max-idle-time: 20s
     max-life-time: 60s

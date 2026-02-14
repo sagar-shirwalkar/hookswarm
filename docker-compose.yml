@@ -30,6 +30,21 @@ services:
         condition: service_healthy
     networks:
       - hookswarm-net
+  
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    container_name: hookswarm-dragonfly
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - dragonfly_data:/data
+    command:
+      - "--save_schedule=*:*/15 * * * *"  # snapshot every 15 minutes
+      - "--maxmemory=4gb"                 # adjust based on your RAM
+      - "--proactor_threads=4"           # use half of your CPU cores
+    networks:
+      - hookswarm-net
 
   postgres:
     image: postgres:16-alpine
@@ -53,6 +68,7 @@ volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  dragonfly_data:
 
 networks:
   hookswarm-net:

@@ -9,6 +9,17 @@ CREATE TABLE delivery_tasks (
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE delivery_tasks
+    ADD COLUMN url     TEXT NOT NULL DEFAULT '',
+    ADD COLUMN secret  TEXT NOT NULL DEFAULT '',
+    ADD COLUMN payload TEXT NOT NULL DEFAULT '';
+
+-- Remove default after adding (defaults are for migration only)
+ALTER TABLE delivery_tasks
+    ALTER COLUMN url DROP DEFAULT,
+    ALTER COLUMN secret DROP DEFAULT,
+    ALTER COLUMN payload DROP DEFAULT;
+
 -- The delivery engine will poll on this
 CREATE INDEX idx_delivery_tasks_due ON delivery_tasks(next_attempt_at)
     WHERE status IN ('PENDING', 'FAILED');

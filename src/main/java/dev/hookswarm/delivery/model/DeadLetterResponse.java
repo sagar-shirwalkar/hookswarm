@@ -1,6 +1,7 @@
 package dev.hookswarm.delivery.model;
 
-import java.time.Instant;
+
+import java.time.OffsetDateTime;
 
 public record DeadLetterResponse(
         String id,
@@ -9,13 +10,18 @@ public record DeadLetterResponse(
         String subscriptionId,
         int totalAttempts,
         String lastError,
-        Instant deadAt
+        OffsetDateTime deadAt
 ) {
     public static DeadLetterResponse from(DeadLetterEntry entry) {
         return new DeadLetterResponse(
-                entry.id(), entry.deliveryTaskId(), entry.eventId(),
-                entry.subscriptionId(), entry.totalAttempts(),
-                entry.lastError(), entry.deadAt()
+                entry.id(),
+                entry.deliveryTaskId(),
+                entry.eventId(),
+                entry.subscriptionId(),
+                entry.totalAttempts(),
+                entry.lastError(),
+                entry.deadAt()
         );
     }
+
 }
