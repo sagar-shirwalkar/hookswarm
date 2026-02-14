@@ -2,11 +2,10 @@ package dev.hookswarm.event.consumer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.hookswarm.common.UlidGenerator;
+import dev.hookswarm.common.config.HookSwarmProperties;
 import dev.hookswarm.common.queue.QueueMessage;
 import dev.hookswarm.common.queue.ReactiveQueueService;
-import dev.hookswarm.delivery.model.DeliveryStatus;
-import dev.hookswarm.delivery.model.DeliveryTask;
-import dev.hookswarm.delivery.repository.ReactiveDeliveryTaskRepository;
+import dev.hookswarm.subscription.cache.ReactiveSubscriptionCache;
 import dev.hookswarm.subscription.model.Subscription;
 import dev.hookswarm.subscription.service.ReactiveSubscriptionService;
 import io.micrometer.core.instrument.Counter;
@@ -23,8 +22,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 
 import java.time.Duration;
-import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -33,14 +31,14 @@ public class ReactiveEventFanoutConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(ReactiveEventFanoutConsumer.class);
     private static final String EVENT_STREAM = "events";
-    private static final String DELIVERY_STREAM = "deliveries";
     private static final String FANOUT_GROUP = "fanout-group";
 
     private final ReactiveQueueService reactiveQueueService;
     private final ReactiveSubscriptionService subscriptionService;
-    private final ReactiveDeliveryTaskRepository deliveryTaskRepository;
     private final ObjectMapper objectMapper;
     private final MeterRegistry meterRegistry;
+    private final HookSwarmProperties properties;
+    private final ReactiveSubscriptionCache subscriptionCache;
     private final String consumerId;
     private final int pollBatchSize;
     private final Duration pollBlockTimeout;
@@ -49,18 +47,18 @@ public class ReactiveEventFanoutConsumer {
     // Metrics
     private final Counter eventsReceived;
     private final Counter subscriptionsFound;
-    private final Counter tasksCreated;
-    private final Counter tasksPublished;
+    private final Counter tasksGenerated;
     private final Counter fanoutErrors;
     private final Timer fanoutProcessingTime;
-    private final AtomicLong inFlightCount = new AtomicLong(0); // for gauge
+    private final AtomicLong inFlightCount = new AtomicLong(0);
 
     public ReactiveEventFanoutConsumer(
             ReactiveQueueService reactiveQueueService,
             ReactiveSubscriptionService subscriptionService,
-            ReactiveDeliveryTaskRepository deliveryTaskRepository,
             ObjectMapper objectMapper,
             MeterRegistry meterRegistry,
+            HookSwarmProperties properties,
+            ReactiveSubscriptionCache subscriptionCache,
             @Value("${HOSTNAME:fanout-worker-${random.uuid}}") String consumerId,
             @Value("${hookswarm.fanout.poll-batch-size:20}") int pollBatchSize,
             @Value("${hookswarm.fanout.poll-block-timeout-ms:2000}") long pollBlockTimeoutMs,
@@ -68,25 +66,22 @@ public class ReactiveEventFanoutConsumer {
 
         this.reactiveQueueService = reactiveQueueService;
         this.subscriptionService = subscriptionService;
-        this.deliveryTaskRepository = deliveryTaskRepository;
         this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
+        this.properties = properties;
+        this.subscriptionCache = subscriptionCache;
         this.consumerId = consumerId;
         this.pollBatchSize = pollBatchSize;
         this.pollBlockTimeout = Duration.ofMillis(pollBlockTimeoutMs);
         this.concurrency = concurrency;
 
-        // Register metrics
         this.eventsReceived = Counter.builder("hookswarm.fanout.events.received")
                 .tag("consumer", consumerId)
                 .register(meterRegistry);
         this.subscriptionsFound = Counter.builder("hookswarm.fanout.subscriptions.found")
                 .tag("consumer", consumerId)
                 .register(meterRegistry);
-        this.tasksCreated = Counter.builder("hookswarm.fanout.tasks.created")
-                .tag("consumer", consumerId)
-                .register(meterRegistry);
-        this.tasksPublished = Counter.builder("hookswarm.fanout.tasks.published")
+        this.tasksGenerated = Counter.builder("hookswarm.fanout.tasks.generated")
                 .tag("consumer", consumerId)
                 .register(meterRegistry);
         this.fanoutErrors = Counter.builder("hookswarm.fanout.errors")
@@ -96,7 +91,6 @@ public class ReactiveEventFanoutConsumer {
                 .tag("consumer", consumerId)
                 .register(meterRegistry);
 
-        // Gauge for in-flight messages
         meterRegistry.gauge("hookswarm.fanout.inflight", inFlightCount);
     }
 
@@ -112,9 +106,6 @@ public class ReactiveEventFanoutConsumer {
                 );
     }
 
-    /**
-     * Infinite reactive stream: polls events, fans out, acks.
-     */
     private Flux<Void> consumeStream() {
         return Flux.defer(this::pollMessages)
                 .doOnNext(msg -> inFlightCount.incrementAndGet())
@@ -129,9 +120,6 @@ public class ReactiveEventFanoutConsumer {
                 .repeat();
     }
 
-    /**
-     * Poll a batch of messages from the event stream.
-     */
     private Flux<QueueMessage> pollMessages() {
         return reactiveQueueService.read(FANOUT_GROUP, consumerId, EVENT_STREAM,
                         pollBatchSize, pollBlockTimeout)
@@ -141,19 +129,12 @@ public class ReactiveEventFanoutConsumer {
                 });
     }
 
-    /**
-     * Process a single event message:
-     * 1. Validate event type
-     * 2. Fetch active subscriptions
-     * 3. For each subscription: create and persist DeliveryTask, then publish to deliveries stream
-     * 4. Acknowledge event message after all tasks are successfully created and published
-     */
     private Mono<Void> processMessage(QueueMessage message) {
         return fanoutProcessingTime.record(() ->
                 validateEventType(message)
-                        .flatMap(eventData -> fanout(eventData)
-                                .then(Mono.defer(() -> ackMessage(message.id())))
-                        )
+                        .flatMap(eventData -> checkBackpressure().thenReturn(eventData))
+                        .flatMap(this::fanout)
+                        .then(ackMessage(message.id()))
                         .doOnError(error -> {
                             fanoutErrors.increment();
                             log.error("Failed to process message {}: {}", message.id(), error.getMessage());
@@ -163,13 +144,27 @@ public class ReactiveEventFanoutConsumer {
                                     .subscribe();
                         })
                         .doFinally(signalType -> inFlightCount.decrementAndGet())
-                        .onErrorResume(e -> Mono.empty()) // error already handled
+                        .onErrorResume(e -> Mono.empty())
         );
     }
 
-    /**
-     * Ensure eventType is present and non‑blank.
-     */
+    private Mono<Void> checkBackpressure() {
+        String normal = properties.fanout().normalStream();
+        String large = properties.fanout().largeStream();
+        return Mono.zip(
+                reactiveQueueService.streamLength(normal),
+                reactiveQueueService.streamLength(large)
+        ).flatMap(tuple -> {
+            long total = tuple.getT1() + tuple.getT2();
+            if (total > properties.fanout().maxPendingDeliveries()) {
+                log.debug("Backpressure: {} pending deliveries, sleeping {}ms",
+                        total, properties.fanout().backpressureDelay().toMillis());
+                return Mono.delay(properties.fanout().backpressureDelay()).then();
+            }
+            return Mono.empty();
+        });
+    }
+
     private Mono<Map<String, String>> validateEventType(QueueMessage msg) {
         String eventType = msg.body().get("eventType");
         if (eventType == null || eventType.isBlank()) {
@@ -178,87 +173,60 @@ public class ReactiveEventFanoutConsumer {
         return Mono.just(msg.body());
     }
 
-    /**
-     * Fan out event to all matching subscriptions.
-     * For each subscription:
-     * - Create and persist a DeliveryTask (reactive)
-     * - Publish a corresponding message to the deliveries stream
-     * - Count successes and errors
-     */
     private Mono<Void> fanout(Map<String, String> eventData) {
         String eventType = eventData.get("eventType");
-        return subscriptionService.getActiveByEventType(eventType)
-                .flatMap(subscription -> processSubscription(subscription, eventData), concurrency * 2)
-                .doOnComplete(() -> log.info("Fanout complete for event {} (type: {})",
-                        eventData.get("eventId"), eventType))
-                .then();
+        return getSubscriptions(eventType)
+                .flatMapMany(Flux::fromIterable)
+                .collectList()
+                .flatMap(subs -> {
+                    boolean isLarge = subs.size() >= properties.fanout().largeSubscriptionThreshold();
+                    if (isLarge) {
+                        log.info("Large fanout: {} subscriptions for event {}", subs.size(), eventData.get("eventId"));
+                    }
+                    String targetStream = isLarge
+                            ? properties.fanout().largeStream()
+                            : properties.fanout().normalStream();
+
+                    return Flux.fromIterable(subs)
+                            .flatMap(sub -> publishDeliveryTask(sub, eventData, targetStream), concurrency * 2)
+                            .then();
+                })
+                .doOnSuccess(unused ->
+                        log.info("Fanout complete for event {} (type: {})", eventData.get("eventId"), eventType));
     }
 
-    /**
-     * Process a single subscription:
-     * 1. Create DeliveryTask entity
-     * 2. Save it to PostgreSQL (reactive)
-     * 3. Publish a message to the deliveries stream
-     */
-    private Mono<Void> processSubscription(Subscription subscription, Map<String, String> eventData) {
-        subscriptionsFound.increment();
+    private Mono<List<Subscription>> getSubscriptions(String eventType) {
+        return subscriptionCache.get(eventType)
+                .switchIfEmpty(
+                        subscriptionService.getActiveByEventType(eventType)
+                                .collectList()
+                                .flatMap(subs -> subscriptionCache.put(eventType, subs).thenReturn(subs))
+                );
+    }
 
-        // Create the task entity
-        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+    private Mono<Void> publishDeliveryTask(Subscription subscription, Map<String, String> eventData, String stream) {
         String taskId = UlidGenerator.newUlid();
-        DeliveryTask task = new DeliveryTask(
-                taskId,
-                eventData.get("eventId"),
-                subscription.id(),
-                subscription.url(),
-                subscription.secret(),
-                eventData.get("payload"),
-                DeliveryStatus.PENDING,
-                0,
-                now, // immediate delivery
-                now,
-                now
-        );
-
-        // Save task to DB, then publish to stream
-        return deliveryTaskRepository.save(task)
-                .doOnSuccess(savedTask -> {
-                    tasksCreated.increment();
-                    log.debug("DeliveryTask {} created for subscription {}", savedTask.id(), subscription.id());
-                })
-                .flatMap(savedTask -> publishDeliveryTask(savedTask, eventData))
-                .doOnError(e -> log.error("Failed to process subscription {} for event {}: {}",
-                        subscription.id(), eventData.get("eventId"), e.getMessage()));
-    }
-
-    /**
-     * Publish a message to the deliveries stream containing all data needed for delivery.
-     */
-    private Mono<Void> publishDeliveryTask(DeliveryTask task, Map<String, String> eventData) {
         Map<String, String> message = Map.of(
-                "taskId", task.id(),
-                "eventId", task.eventId(),
-                "subscriptionId", task.subscriptionId(),
-                "url", task.url(),
-                "secret", task.secret(),
-                "payload", task.payload(),
-                "retryCount", String.valueOf(task.attemptCount())
+                "taskId", taskId,
+                "eventId", eventData.get("eventId"),
+                "subscriptionId", subscription.id(),
+                "url", subscription.url(),
+                "secret", subscription.secret(),
+                "payload", eventData.get("payload"),
+                "retryCount", "0"
         );
 
-        return reactiveQueueService.publish(DELIVERY_STREAM, message)
+        return reactiveQueueService.publish(stream, message)
                 .doOnNext(msgId -> {
-                    tasksPublished.increment();
-                    log.debug("Delivery task {} published to stream with message ID {}", task.id(), msgId);
+                    tasksGenerated.increment();
+                    log.debug("Delivery task {} published to stream {} with message ID {}", taskId, stream, msgId);
                 })
                 .then();
     }
 
-    /**
-     * Acknowledge the original event message.
-     */
     private Mono<Void> ackMessage(String messageId) {
         return reactiveQueueService.ack(EVENT_STREAM, FANOUT_GROUP, messageId)
                 .doOnSuccess(unused -> log.debug("Acknowledged event message {}", messageId));
     }
-
+    
 }

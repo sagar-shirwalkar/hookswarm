@@ -1,6 +1,7 @@
 package dev.hookswarm.delivery.engine;
 
 import dev.hookswarm.common.UlidGenerator;
+import dev.hookswarm.common.config.HookSwarmProperties;
 import dev.hookswarm.common.queue.QueueMessage;
 import dev.hookswarm.common.queue.ReactiveQueueService;
 import dev.hookswarm.delivery.model.*;
@@ -19,13 +20,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 
@@ -34,7 +39,7 @@ public class ReactiveDeliveryConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(ReactiveDeliveryConsumer.class);
 
-    private static final String DELIVERY_STREAM = "deliveries";
+    //private static final String DELIVERY_STREAM = "deliveries";
     private static final String DELIVERY_GROUP = "delivery-group";
     private static final String SIGNATURE_HEADER = "X-Hook-Signature";
 
@@ -54,6 +59,8 @@ public class ReactiveDeliveryConsumer {
     private final Duration pollBlockTimeout;
     private final int concurrency;
     private final Duration httpTimeout;
+    private final List<String> streams;
+    private final int perEndpointMaxConcurrency;
 
     // Metrics
     private final Counter messagesReceived;
@@ -66,6 +73,9 @@ public class ReactiveDeliveryConsumer {
     private final Function<QueueMessage, Mono<DeliveryTask>> deserializer;
     private final Function<Instant, OffsetDateTime> toOffsetDateTime;
 
+    private final ConcurrentHashMap<String, Semaphore> endpointSemaphores = new ConcurrentHashMap<>();
+    //private final int perEndpointMaxConcurrency;
+
     public ReactiveDeliveryConsumer(
             ReactiveQueueService queueService,
             ReactiveSubscriptionService subscriptionService,
@@ -77,6 +87,7 @@ public class ReactiveDeliveryConsumer {
             WebhookSigner webhookSigner,
             WebClient.Builder webClientBuilder,
             MeterRegistry meterRegistry,
+            HookSwarmProperties properties,
             @Value("${HOSTNAME:delivery-worker-${random.uuid}}") String consumerId,
             @Value("${hookswarm.delivery.poll-batch-size:20}") int pollBatchSize,
             @Value("${hookswarm.delivery.poll-block-timeout-ms:2000}") long pollBlockTimeoutMs,
@@ -100,6 +111,9 @@ public class ReactiveDeliveryConsumer {
         this.pollBlockTimeout = Duration.ofMillis(pollBlockTimeoutMs);
         this.concurrency = concurrency;
         this.httpTimeout = Duration.ofSeconds(httpTimeoutSeconds);
+
+        this.perEndpointMaxConcurrency = properties.delivery().perEndpointMaxConcurrency();
+        this.streams = properties.delivery().streams(); // list of streams to consume from
 
         // Predefine pure funcs
         this.deserializer = this::deserializeTask;
@@ -128,9 +142,9 @@ public class ReactiveDeliveryConsumer {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         log.info("Starting ReactiveDeliveryConsumer with ID: {}", consumerId);
-        queueService.createGroup(DELIVERY_STREAM, DELIVERY_GROUP)
-                .doOnSuccess(unused -> log.info("Delivery consumer {} ready", consumerId))
-                .thenMany(consumeStream())
+        Flux.fromIterable(streams)
+                .flatMap(stream -> queueService.createGroup(stream, DELIVERY_GROUP))
+                .thenMany(consumeStreams())
                 .subscribe(
                         null,
                         error -> log.error("Fatal error in delivery consumer", error),
@@ -138,16 +152,17 @@ public class ReactiveDeliveryConsumer {
                 );
     }
 
-    /**
-     * Main consumption loop with backpressure and error recovery.
-     */
-    private Flux<Void> consumeStream() {
-        return Flux.defer(this::pollMessages)
-                .doOnNext(msg -> {
-                    messagesReceived.increment();
-                    inFlightCount.incrementAndGet();
-                })
-                .flatMap(this::processMessage, concurrency)
+    private Flux<Void> consumeStreams() {
+        return Flux.fromIterable(streams)
+                .flatMap(stream ->
+                        Flux.defer(() -> pollMessages(stream))
+                                .map(msg -> new StreamMessage(stream, msg))
+                                .doOnNext(sm -> {
+                                    messagesReceived.increment();
+                                    inFlightCount.incrementAndGet();
+                                })
+                                .flatMap(this::processMessage, concurrency)
+                )
                 .doFinally(signal -> inFlightCount.set(0))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
                         .maxBackoff(Duration.ofMinutes(1))
@@ -157,32 +172,36 @@ public class ReactiveDeliveryConsumer {
                 .repeat();
     }
 
-    private Flux<QueueMessage> pollMessages() {
-        return queueService.read(
-                DELIVERY_GROUP,
-                consumerId,
-                DELIVERY_STREAM,
-                pollBatchSize,
-                pollBlockTimeout
-        );
+    private Flux<QueueMessage> pollMessages(String stream) {
+        return queueService.read(DELIVERY_GROUP, consumerId, stream, pollBatchSize, pollBlockTimeout);
     }
 
-    /**
-     * Process single message - optimized flat chain.
-     */
-    private Mono<Void> processMessage(QueueMessage message) {
+    private Mono<Void> processMessage(StreamMessage sm) {
         return Mono.defer(() -> {
             Timer.Sample sample = Timer.start();
 
-            return deserializer.apply(message)
-                    .flatMap(taskRepository::save)
+            return deserializer.apply(sm.message)
+                    .flatMap(this::ensureTaskExists)
                     .flatMap(this::executeDelivery)
-                    .flatMap(context -> ackMessage(message)
+                    .flatMap(context -> ackMessage(sm.stream, sm.message)
                             .doOnSuccess(unused -> sample.stop(deliveryTimer))
                     )
                     .doFinally(signal -> inFlightCount.decrementAndGet())
-                    .onErrorResume(error -> handleProcessingError(message, error));
+                    .onErrorResume(error -> handleProcessingError(sm.stream, sm.message, error));
         });
+    }
+
+    /**
+     * Ensure the task exists in the database (inserted by batch writer).
+     * If not found, retry with backoff.
+     */
+    private Mono<DeliveryTask> ensureTaskExists(DeliveryTask task) {
+        return taskRepository.findById(task.id())
+                .switchIfEmpty(Mono.error(new TaskNotFoundException(task.id())))
+                .retryWhen(Retry.backoff(5, Duration.ofMillis(100))
+                        .maxBackoff(Duration.ofSeconds(2))
+                        .filter(throwable -> throwable instanceof TaskNotFoundException))
+                .doOnError(e -> log.error("Task {} still missing after retries", task.id()));
     }
 
     /**
@@ -200,9 +219,31 @@ public class ReactiveDeliveryConsumer {
     }
 
     /**
-     * Attempt webhook delivery
+     * Attempt webhook delivery with per‑endpoint concurrency limiting.
      */
     private Mono<DeliveryContext> attemptDelivery(DeliveryTask task, Subscription subscription) {
+        if (perEndpointMaxConcurrency <= 0) {
+            return doAttemptDelivery(task, subscription);
+        }
+        String endpointKey = subscription.url(); // or extract host
+        Semaphore semaphore = endpointSemaphores.computeIfAbsent(endpointKey,
+                k -> new Semaphore(perEndpointMaxConcurrency));
+        return Mono.using(
+                () -> {
+                    try {
+                        semaphore.acquire();
+                        return semaphore; // resource is the semaphore itself
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                },
+                _ -> doAttemptDelivery(task, subscription), // use the resource (ignored)
+                Semaphore::release // cleanup: release the permit
+        ).subscribeOn(Schedulers.boundedElastic()); // acquisition blocks, so offload
+    }
+
+    private Mono<DeliveryContext> doAttemptDelivery(DeliveryTask task, Subscription subscription) {
         Instant start = Instant.now();
 
         return webClient.post()
@@ -366,20 +407,20 @@ public class ReactiveDeliveryConsumer {
     }
 
     /**
-     * Acknowledge message after successful processing.
+     * Acknowledge message on the stream it came from.
      */
-    private Mono<Void> ackMessage(QueueMessage message) {
-        return queueService.ack(DELIVERY_STREAM, DELIVERY_GROUP, message.id());
+    private Mono<Void> ackMessage(String stream, QueueMessage message) {
+        return queueService.ack(stream, DELIVERY_GROUP, message.id());
     }
 
     /**
      * Handle processing errors - move to DLQ without ack.
      */
-    private Mono<Void> handleProcessingError(QueueMessage message, Throwable error) {
-        log.error("Failed to process message {}: {}", message.id(), error.getMessage());
+    private Mono<Void> handleProcessingError(String stream, QueueMessage message, Throwable error) {
+        log.error("Failed to process message {} from stream {}: {}", message.id(), stream, error.getMessage());
 
-        return queueService.deadLetter(DELIVERY_STREAM, message.id(), message.body(), error)
-                .doOnError(e -> log.error("Failed to DLQ message {}", message.id(), e))
+        return queueService.deadLetter(stream, message.id(), message.body(), error)
+                .doOnError(e -> log.error("Failed to DLQ message {} from stream {}", message.id(), stream, e))
                 .onErrorResume(e -> Mono.empty()); // Don't fail the stream
     }
 
@@ -422,7 +463,18 @@ public class ReactiveDeliveryConsumer {
         }
     }
 
+    private static class TaskNotFoundException extends RuntimeException {
+        TaskNotFoundException(String id) {
+            super("Task not found: " + id);
+        }
+    }
+
     // ========== Internal Context Record ==========
+
+    /**
+     * Pairs a stream name with a queue message.
+     */
+    private record StreamMessage(String stream, QueueMessage message) {}
 
     /**
      * Immutable context for delivery processing.
