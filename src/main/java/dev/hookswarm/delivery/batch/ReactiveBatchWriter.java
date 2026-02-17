@@ -1,5 +1,6 @@
 package dev.hookswarm.delivery.batch;
 
+
 import dev.hookswarm.common.UlidGenerator;
 import dev.hookswarm.common.config.HookSwarmProperties;
 import dev.hookswarm.common.queue.QueueMessage;
@@ -7,6 +8,7 @@ import dev.hookswarm.common.queue.ReactiveQueueService;
 import dev.hookswarm.delivery.model.DeliveryStatus;
 import dev.hookswarm.delivery.model.DeliveryTask;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.r2dbc.spi.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,26 +23,24 @@ import reactor.core.publisher.Sinks;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Batch Writer Consumer:
- * Reads from configured streams (e.g., deliveries.normal), accumulates messages,
- * and performs batched inserts into PostgreSQL using R2DBC.
- */
 @Component
 public class ReactiveBatchWriter {
 
     private static final Logger log = LoggerFactory.getLogger(ReactiveBatchWriter.class);
     private static final String BATCH_WRITER_GROUP = "batch-writer-group";
+    private static final String FALLBACK_STREAM = "deliveries.single";
 
     private final ReactiveQueueService queueService;
     private final R2dbcEntityTemplate r2dbcTemplate;
     private final HookSwarmProperties properties;
     private final MeterRegistry meterRegistry;
     private final String consumerId;
+    private final List<String> targetStreams; // streams to consume from
 
     // Batching state
     private final Sinks.Many<StreamMessage> batchSink = Sinks.many().multicast().onBackpressureBuffer();
@@ -59,8 +59,19 @@ public class ReactiveBatchWriter {
         this.meterRegistry = meterRegistry;
         this.consumerId = consumerId;
 
-        meterRegistry.gauge("hookswarm.batchwriter.queue.size", batchSink.currentSubscriberCount());
-        meterRegistry.gauge("hookswarm.batchwriter.inflight", inFlightCount);
+        // Determine target streams based on sharding configuration
+        var sharding = properties.delivery().sharding();
+        if (sharding.enabled()) {
+            this.targetStreams = new ArrayList<>();
+            for (int i = 0; i < sharding.numberOfShards(); i++) {
+                targetStreams.add(sharding.streamPrefix() + "." + i);
+            }
+        } else {
+            this.targetStreams = List.of(FALLBACK_STREAM);
+        }
+
+        meterRegistry.gauge("hookswarm.batchwriter.queue.size", batchSink, Sinks.Many::currentSubscriberCount);
+        meterRegistry.gauge("hookswarm.batchwriter.inflight", inFlightCount, AtomicLong::get);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -70,8 +81,10 @@ public class ReactiveBatchWriter {
             return;
         }
 
+        log.info("Starting ReactiveBatchWriter with streams: {}", targetStreams);
+
         // Create consumer groups for each stream
-        Flux.fromIterable(properties.batchWriter().streams())
+        Flux.fromIterable(targetStreams)
                 .flatMap(stream -> queueService.createGroup(stream, BATCH_WRITER_GROUP))
                 .thenMany(consumeStreams())
                 .subscribe(
@@ -86,7 +99,7 @@ public class ReactiveBatchWriter {
 
     private Flux<Void> consumeStreams() {
         return Flux.interval(Duration.ZERO, properties.batchWriter().flushInterval())
-                .flatMap(tick -> Flux.fromIterable(properties.batchWriter().streams())
+                .flatMap(tick -> Flux.fromIterable(targetStreams)
                         .flatMap(stream -> queueService.read(BATCH_WRITER_GROUP, consumerId, stream,
                                         properties.batchWriter().batchSize(), Duration.ZERO)
                                 .map(message -> new StreamMessage(stream, message)))
@@ -130,11 +143,11 @@ public class ReactiveBatchWriter {
                 .inConnection(connection -> {
                     // Create the SQL statement with positional parameters
                     String sql = "INSERT INTO delivery_tasks " +
-                            "(id, event_id, subscription_id, url, secret, payload, status, " +
-                            "attempt_count, next_attempt_at, created_at, updated_at) " +
-                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
-                    io.r2dbc.spi.Statement statement = connection.createStatement(sql);
+                    "(id, event_id, subscription_id, url, secret, payload, status, " +
+                    "attempt_count, next_attempt_at, created_at, updated_at) " +
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
 
+                    io.r2dbc.spi.Statement statement = connection.createStatement(sql);
                     // Add each task as a set of parameters
                     for (DeliveryTask task : tasks) {
                         statement.bind(0, task.id())
@@ -151,9 +164,9 @@ public class ReactiveBatchWriter {
                                 .add();
                     }
 
-                    // Execute the batch and return the number of rows affected (sum)
+                    // Execute the batch and return the number of rows affected
                     return Mono.from(statement.execute())
-                            .flatMapMany(result -> result.getRowsUpdated())
+                            .flatMapMany(Result::getRowsUpdated)
                             .reduce(0L, Long::sum);
                 })
                 .doOnSuccess(totalRows -> {
@@ -166,7 +179,6 @@ public class ReactiveBatchWriter {
                 })
                 .doOnError(e -> {
                     log.error("Failed to insert batch, will retry messages individually", e);
-                    // Do NOT ack; messages will be redelivered
                 })
                 .subscribe();
     }
@@ -189,8 +201,7 @@ public class ReactiveBatchWriter {
         );
     }
 
-    /**
-     * Pairs a stream name with a queue message for acknowledgment.
-     */
+    // Pairs a stream name with a queue message for acknowledgment
     private record StreamMessage(String stream, QueueMessage message) {}
+    
 }

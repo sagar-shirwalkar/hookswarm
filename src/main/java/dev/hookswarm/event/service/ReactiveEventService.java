@@ -36,10 +36,8 @@ public class ReactiveEventService {
         this.objectMapper = objectMapper;
     }
 
-    /**
-     * Create a new event, persist it, and publish to the event stream.
-     * Idempotency key is used to prevent duplicates.
-     */
+    // Create a new event, persist it, and publish to the event stream
+    // Idempotency key is used to prevent duplicates
     public Mono<EventResponse> createEvent(CreateEventRequest request) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         String eventId = UlidGenerator.newUlid();
@@ -73,9 +71,7 @@ public class ReactiveEventService {
                 .doOnError(e -> log.error("Failed to create event", e));
     }
 
-    /**
-     * Publish the event to DragonflyDB stream for fanout processing.
-     */
+    // Publish the event to DragonflyDB stream for fanout processing.
     private Mono<Void> publishToStream(Event event) {
         Map<String, String> message = Map.of(
                 "eventId", event.id(),

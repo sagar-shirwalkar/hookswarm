@@ -165,16 +165,11 @@ public class DragonflyReactiveQueueService implements ReactiveQueueService {
                         stream, group, e.getMessage()));
     }
 
-    // ========== Private Helpers ==========
-
     private QueueMessage toQueueMessage(MapRecord<String, String, String> record) {
         return new QueueMessage(record.getId().getValue(), record.getValue());
     }
 
-    /**
-     * Extract consumer group name from stream name.
-     * This is a convention – you may want to pass the group explicitly.
-     */
+    // Extract consumer group name from stream name.
     private String extractGroup(String stream) {
         if (stream.startsWith("events")) {
             return "fanout-group";

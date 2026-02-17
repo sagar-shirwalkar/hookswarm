@@ -17,7 +17,7 @@ public interface ReactiveDeliveryTaskRepository extends ReactiveCrudRepository<D
 
     Flux<DeliveryTask> findBySubscriptionId(String subscriptionId);
 
-    // ===== Status update methods =====
+    // Status update methods
     @Modifying
     @Query("UPDATE delivery_tasks SET status = 'DELIVERED', updated_at = :updatedAt WHERE id = :id")
     Mono<Integer> markDelivered(@Param("id") String id,
@@ -43,13 +43,13 @@ public interface ReactiveDeliveryTaskRepository extends ReactiveCrudRepository<D
                                  @Param("nextAttemptAt") OffsetDateTime nextAttemptAt,
                                  @Param("updatedAt") OffsetDateTime updatedAt);
 
-    // ===== Optional: Polling for legacy fallback (if you keep the old engine) =====
+    // Deprecate this: Polling for legacy fallback
     @Query("SELECT * FROM delivery_tasks WHERE status IN ('PENDING', 'FAILED') " +
             "AND next_attempt_at <= :now ORDER BY next_attempt_at ASC LIMIT :limit")
     Flux<DeliveryTask> findDueTasks(@Param("now") OffsetDateTime now,
                                     @Param("limit") int limit);
 
-    // ===== Count by status (useful for metrics) =====
+    // Count by status if needed for metrics
     Mono<Long> countByStatus(DeliveryStatus status);
 
 }

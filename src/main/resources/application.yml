@@ -94,6 +94,10 @@ hookswarm:
     poll-block-timeout-ms: 1000
     concurrency: 50
     http-timeout-seconds: 10
+    sharding:
+      enabled: true
+      number-of-shards: 8
+      stream-prefix: "deliveries.shard"
 
   webclient:
     max-connections: 500

@@ -32,12 +32,19 @@ public record HookSwarmProperties(
             @DefaultValue("20") int concurrency,
             @DefaultValue("10s") Duration httpTimeout,
             @DefaultValue("5") int perEndpointMaxConcurrency,
-            @DefaultValue({"deliveries.normal", "deliveries.large"}) List<String> streams
-    ) {}
+            // Deprecate this, replacing with sharding: @DefaultValue({"deliveries.normal", "deliveries.large"}) List<String> streams
+            Sharding sharding
+    ) {
+        public record Sharding(
+                @DefaultValue("true") boolean enabled,
+                @DefaultValue("8") int numberOfShards,
+                @DefaultValue("deliveries.shard") String streamPrefix
+        ) {}
+    }
 
     public record BatchWriter(
             @DefaultValue("true") boolean enabled,
-            @DefaultValue({"deliveries.normal"}) List<String> streams,
+            // Deprecate this, replacing with sharding: @DefaultValue({"deliveries.normal"}) List<String> streams,
             @DefaultValue("500") int batchSize,
             @DefaultValue("100ms") Duration flushInterval,
             @DefaultValue("2") int concurrency
