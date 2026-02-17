@@ -30,41 +30,36 @@ graph TD
 
     EventStream -->|Read| Fanout[ReactiveEventFanoutConsumer]
 
-    subgraph "Fan-out & Caching"
+    subgraph "Fan-out & Sharding"
         Fanout -->|Check cache| Cache[("Dragonfly: subscription cache")]
         Cache -.->|Cache miss| SubDB[(PostgreSQL: subscriptions)]
-        Fanout -->|Route| NormalStream[("Dragonfly: deliveries.normal")]
-        Fanout -->|Route| LargeStream[("Dragonfly: deliveries.large")]
+        Fanout -->|Route via consistent hash| Shards[("Dragonfly: delivery shards (0..N)")]
     end
 
-    NormalStream -->|Read| BatchWriter[ReactiveBatchWriter]
+    Shards -->|Read all shards| BatchWriter[ReactiveBatchWriter]
     BatchWriter -->|Batch insert| TaskDB[(PostgreSQL: delivery_tasks)]
 
-    NormalStream -->|Read| Delivery1[ReactiveDeliveryConsumer]
-    LargeStream -->|Read| Delivery1
-    Delivery1 -->|Verify task exists| TaskDB
-    Delivery1 -->|Fetch subscription| SubDB
-    Delivery1 -->|HTTP POST| Target[Subscriber Endpoint]
-    Delivery1 -->|Record attempt| AttemptDB[(PostgreSQL: delivery_attempts)]
-    Delivery1 -->|Update task status| TaskDB
-    Delivery1 -->|If retries exhausted| DLQ[(PostgreSQL: dead_letter_queue)]
+    Shards -->|Read all shards| DeliveryConsumer[ReactiveDeliveryConsumer]
+    DeliveryConsumer -->|Verify task exists| TaskDB
+    DeliveryConsumer -->|Fetch subscription| SubDB
+    DeliveryConsumer -->|HTTP POST| Target[Subscriber Endpoint]
+    DeliveryConsumer -->|Record attempt| AttemptDB[(PostgreSQL: delivery_attempts)]
+    DeliveryConsumer -->|Update task status| TaskDB
+    DeliveryConsumer -->|If retries exhausted| DLQ[(PostgreSQL: dead_letter_queue)]
 
     style API fill:#f9f,stroke:#333,stroke-width:2px
     style Fanout fill:#bbf,stroke:#333,stroke-width:2px
     style BatchWriter fill:#bbf,stroke:#333,stroke-width:2px
-    style Delivery1 fill:#bbf,stroke:#333,stroke-width:2px
+    style DeliveryConsumer fill:#bbf,stroke:#333,stroke-width:2px
     style PG fill:#dfd,stroke:#333,stroke-width:2px
     style SubDB fill:#dfd,stroke:#333,stroke-width:2px
     style TaskDB fill:#dfd,stroke:#333,stroke-width:2px
     style AttemptDB fill:#dfd,stroke:#333,stroke-width:2px
     style DLQ fill:#dfd,stroke:#333,stroke-width:2px
     style EventStream fill:#ffd,stroke:#333,stroke-width:2px
-    style NormalStream fill:#ffd,stroke:#333,stroke-width:2px
-    style LargeStream fill:#ffd,stroke:#333,stroke-width:2px
+    style Shards fill:#ffd,stroke:#333,stroke-width:2px
     style Cache fill:#ffd,stroke:#333,stroke-width:2px
 ```
-
-
 
 ## **API Examples**
 
