@@ -2,12 +2,13 @@
 
 HookSwarm is a high-performance webhook delivery system built on **Java 21**, **Spring WebFlux/Netty**, **R2DBC**, and **DragonflyDB** as cache and active queue.
 
-It is designed to reliably fan out events to hundreds of thousands of subscribers with sub‑100ms latency, while maintaining exactly‑once delivery semantics and surviving downstream failures through intelligent retries, circuit breakers, and a dead‑letter queue.
+It is designed to reliably fan out events to thousands of subscribers with sub‑100ms latency, while maintaining exactly‑once delivery semantics and surviving downstream failures through intelligent retries, circuit breakers, and a dead‑letter queue.
 
 ## **Features**
 
 - **Asynchronous, non‑blocking event ingestion** that never blocks the caller.
-- **Reliable fan‑out** to all active subscriptions, even for events with thousands of subscribers. Spikes handled with backpressure and a dual-stream approach with Dragonfly.
+- **Reliable fan‑out** to all active subscriptions, even for events with thousands of subscribers.
+- **Horizontal scalability** with sharded Dragonfly streams and fully concurrent consumer reads. Dial up performance by adding more instances and shards.
 - **Exponential backoff retries** with configurable jitter.
 - **Per‑endpoint circuit breakers** to isolate failing destinations.
 - **Dead‑letter queue** for messages that exceed retry limits.

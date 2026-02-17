@@ -203,5 +203,5 @@ public class ReactiveBatchWriter {
 
     // Pairs a stream name with a queue message for acknowledgment
     private record StreamMessage(String stream, QueueMessage message) {}
-    
+
 }
