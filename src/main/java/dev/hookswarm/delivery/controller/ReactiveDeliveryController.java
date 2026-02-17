@@ -21,9 +21,9 @@ public class ReactiveDeliveryController {
         this.deliveryService = deliveryService;
     }
 
-    // ------------------------------------------------------------------------
+    //
     // Delivery Tasks
-    // ------------------------------------------------------------------------
+    //
 
     @GetMapping("/deliveries/{id}")
     public Mono<DeliveryTaskResponse> getTask(@PathVariable String id) {
@@ -75,9 +75,9 @@ public class ReactiveDeliveryController {
                 .map(DeliveryTaskResponse::from);
     }
 
-    // ------------------------------------------------------------------------
+    //
     // Dead Letter Queue
-    // ------------------------------------------------------------------------
+    //
 
     @GetMapping("/dlq")
     public Mono<PagedResponse<DeadLetterResponse>> listDeadLetters(

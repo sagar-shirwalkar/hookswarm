@@ -48,7 +48,6 @@ public class R2dbcConfig extends AbstractR2dbcConfiguration {
         );
     }
 
-    // ---------- Set<String> <-> text[] ----------
     @ReadingConverter
     @Component
     public static class ArrayToStringSetConverter implements Converter<String[], Set<String>> {
@@ -67,7 +66,6 @@ public class R2dbcConfig extends AbstractR2dbcConfiguration {
         }
     }
 
-    // ---------- DeliveryStatus ----------
     @ReadingConverter
     @Component
     public static class StringToDeliveryStatusConverter implements Converter<String, DeliveryStatus> {
@@ -86,7 +84,6 @@ public class R2dbcConfig extends AbstractR2dbcConfiguration {
         }
     }
 
-    // ---------- SubscriptionStatus ----------
     @ReadingConverter
     @Component
     public static class StringToSubscriptionStatusConverter implements Converter<String, SubscriptionStatus> {

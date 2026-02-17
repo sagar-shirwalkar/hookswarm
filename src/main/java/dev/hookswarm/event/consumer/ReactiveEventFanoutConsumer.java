@@ -22,6 +22,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -32,6 +33,7 @@ public class ReactiveEventFanoutConsumer {
     private static final Logger log = LoggerFactory.getLogger(ReactiveEventFanoutConsumer.class);
     private static final String EVENT_STREAM = "events";
     private static final String FANOUT_GROUP = "fanout-group";
+    private static final String FALLBACK_STREAM = "deliveries.single";
 
     private final ReactiveQueueService reactiveQueueService;
     private final ReactiveSubscriptionService subscriptionService;
@@ -44,6 +46,11 @@ public class ReactiveEventFanoutConsumer {
     private final Duration pollBlockTimeout;
     private final int concurrency;
 
+    // Sharding configuration
+    private final boolean shardingEnabled;
+    private final int numberOfShards;
+    private final String streamPrefix;
+    private final List<String> targetStreams; // streams to publish to
     // Metrics
     private final Counter eventsReceived;
     private final Counter subscriptionsFound;
@@ -75,6 +82,20 @@ public class ReactiveEventFanoutConsumer {
         this.pollBlockTimeout = Duration.ofMillis(pollBlockTimeoutMs);
         this.concurrency = concurrency;
 
+        // Sharding setup
+        var sharding = properties.delivery().sharding();
+        this.shardingEnabled = sharding.enabled();
+        this.numberOfShards = sharding.numberOfShards();
+        this.streamPrefix = sharding.streamPrefix();
+        this.targetStreams = new ArrayList<>();
+        if (shardingEnabled) {
+            for (int i = 0; i < numberOfShards; i++) {
+                targetStreams.add(streamPrefix + "." + i);
+            }
+        } else {
+            targetStreams.add(FALLBACK_STREAM);
+        }
+
         this.eventsReceived = Counter.builder("hookswarm.fanout.events.received")
                 .tag("consumer", consumerId)
                 .register(meterRegistry);
@@ -97,18 +118,18 @@ public class ReactiveEventFanoutConsumer {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         reactiveQueueService.createGroup(EVENT_STREAM, FANOUT_GROUP)
-                .doOnSuccess(unused -> log.info("Fanout consumer group ready: {}", FANOUT_GROUP))
+                .doOnSuccess(_ -> log.info("Fanout consumer group ready: {}", FANOUT_GROUP))
                 .thenMany(consumeStream())
                 .subscribe(
                         null,
                         error -> log.error("Fatal error in fanout consumer, terminating", error),
-                        () -> log.warn("Fanout consumer completed (should never happen)")
+                        () -> log.warn("Fanout consumer completed - should never happen!")
                 );
     }
 
     private Flux<Void> consumeStream() {
         return Flux.defer(this::pollMessages)
-                .doOnNext(msg -> inFlightCount.incrementAndGet())
+                .doOnNext(_ -> inFlightCount.incrementAndGet())
                 .flatMapSequential(this::processMessage, concurrency)
                 .doFinally(signalType -> {
                     if (signalType == SignalType.ON_COMPLETE || signalType == SignalType.CANCEL) {
@@ -148,21 +169,19 @@ public class ReactiveEventFanoutConsumer {
         );
     }
 
+    // Check total pending messages across all target streams and apply backpressure if needed.
     private Mono<Void> checkBackpressure() {
-        String normal = properties.fanout().normalStream();
-        String large = properties.fanout().largeStream();
-        return Mono.zip(
-                reactiveQueueService.streamLength(normal),
-                reactiveQueueService.streamLength(large)
-        ).flatMap(tuple -> {
-            long total = tuple.getT1() + tuple.getT2();
-            if (total > properties.fanout().maxPendingDeliveries()) {
-                log.debug("Backpressure: {} pending deliveries, sleeping {}ms",
-                        total, properties.fanout().backpressureDelay().toMillis());
-                return Mono.delay(properties.fanout().backpressureDelay()).then();
-            }
-            return Mono.empty();
-        });
+        return Flux.fromIterable(targetStreams)
+                .flatMap(reactiveQueueService::streamLength)
+                .reduce(0L, Long::sum)
+                .flatMap(total -> {
+                    if (total > properties.fanout().maxPendingDeliveries()) {
+                        log.debug("Backpressure: {} pending deliveries, sleeping {}ms",
+                                total, properties.fanout().backpressureDelay().toMillis());
+                        return Mono.delay(properties.fanout().backpressureDelay()).then();
+                    }
+                    return Mono.empty();
+                });
     }
 
     private Mono<Map<String, String>> validateEventType(QueueMessage msg) {
@@ -178,33 +197,22 @@ public class ReactiveEventFanoutConsumer {
         return getSubscriptions(eventType)
                 .flatMapMany(Flux::fromIterable)
                 .collectList()
-                .flatMap(subs -> {
-                    boolean isLarge = subs.size() >= properties.fanout().largeSubscriptionThreshold();
-                    if (isLarge) {
-                        log.info("Large fanout: {} subscriptions for event {}", subs.size(), eventData.get("eventId"));
-                    }
-                    String targetStream = isLarge
-                            ? properties.fanout().largeStream()
-                            : properties.fanout().normalStream();
-
-                    return Flux.fromIterable(subs)
-                            .flatMap(sub -> publishDeliveryTask(sub, eventData, targetStream), concurrency * 2)
-                            .then();
-                })
+                .flatMap(subs -> Flux.fromIterable(subs)
+                        .flatMap(sub -> publishToTarget(sub, eventData), concurrency * 2)
+                        .then())
                 .doOnSuccess(unused ->
                         log.info("Fanout complete for event {} (type: {})", eventData.get("eventId"), eventType));
     }
 
-    private Mono<List<Subscription>> getSubscriptions(String eventType) {
-        return subscriptionCache.get(eventType)
-                .switchIfEmpty(
-                        subscriptionService.getActiveByEventType(eventType)
-                                .collectList()
-                                .flatMap(subs -> subscriptionCache.put(eventType, subs).thenReturn(subs))
-                );
-    }
+    private Mono<Void> publishToTarget(Subscription subscription, Map<String, String> eventData) {
+        String stream;
+        if (shardingEnabled) {
+            int shardIndex = Math.abs(subscription.id().hashCode()) % numberOfShards;
+            stream = streamPrefix + "." + shardIndex;
+        } else {
+            stream = FALLBACK_STREAM;
+        }
 
-    private Mono<Void> publishDeliveryTask(Subscription subscription, Map<String, String> eventData, String stream) {
         String taskId = UlidGenerator.newUlid();
         Map<String, String> message = Map.of(
                 "taskId", taskId,
@@ -224,9 +232,18 @@ public class ReactiveEventFanoutConsumer {
                 .then();
     }
 
+    private Mono<List<Subscription>> getSubscriptions(String eventType) {
+        return subscriptionCache.get(eventType)
+                .switchIfEmpty(
+                        subscriptionService.getActiveByEventType(eventType)
+                                .collectList()
+                                .flatMap(subs -> subscriptionCache.put(eventType, subs).thenReturn(subs))
+                );
+    }
+
     private Mono<Void> ackMessage(String messageId) {
         return reactiveQueueService.ack(EVENT_STREAM, FANOUT_GROUP, messageId)
-                .doOnSuccess(unused -> log.debug("Acknowledged event message {}", messageId));
+                .doOnSuccess(_ -> log.debug("Acknowledged event message {}", messageId));
     }
-    
+
 }

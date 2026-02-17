@@ -50,10 +50,7 @@ public class ReactiveCircuitBreakerManager {
                 new CircuitState(Status.HALF_OPEN, state.consecutiveFailures, state.openedAt);
     }
 
-    /**
-     * Check if circuit is open. Uses Mono.defer for true laziness.
-     * Optimized: Single map lookup, minimal allocations.
-     */
+    // Check if circuit is open. Uses Mono.defer for true laziness.
     public Mono<Boolean> isOpen(String subscriptionId) {
         return Mono.defer(() -> {
             CircuitState state = circuits.get(subscriptionId);
@@ -80,10 +77,7 @@ public class ReactiveCircuitBreakerManager {
         });
     }
 
-    /**
-     * Record success - closes circuit.
-     * Optimized: Direct remove, no conditional logic.
-     */
+    // Record success - closes circuit.
     public Mono<Void> recordSuccess(String subscriptionId) {
         return Mono.defer(() -> {
             CircuitState removed = circuits.remove(subscriptionId);
@@ -94,10 +88,7 @@ public class ReactiveCircuitBreakerManager {
         });
     }
 
-    /**
-     * Record failure - may open circuit.
-     * Optimized: Single compute operation, pure function transitions.
-     */
+    // Record failure - may open circuit.
     public Mono<Void> recordFailure(String subscriptionId) {
         return Mono.defer(() -> {
             circuits.compute(subscriptionId, (id, current) -> {
@@ -130,9 +121,7 @@ public class ReactiveCircuitBreakerManager {
         });
     }
 
-    /**
-     * Clear circuit state (for testing/admin operations).
-     */
+    // Clear circuit state - testing/admin ops
     public Mono<Void> reset(String subscriptionId) {
         return Mono.defer(() -> {
             circuits.remove(subscriptionId);

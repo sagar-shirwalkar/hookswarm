@@ -1,5 +1,6 @@
 package dev.hookswarm.delivery.engine;
 
+
 import dev.hookswarm.common.UlidGenerator;
 import dev.hookswarm.common.config.HookSwarmProperties;
 import dev.hookswarm.common.queue.QueueMessage;
@@ -27,6 +28,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,9 +41,9 @@ public class ReactiveDeliveryConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(ReactiveDeliveryConsumer.class);
 
-    //private static final String DELIVERY_STREAM = "deliveries";
     private static final String DELIVERY_GROUP = "delivery-group";
     private static final String SIGNATURE_HEADER = "X-Hook-Signature";
+    private static final String FALLBACK_STREAM = "deliveries.single";
 
     private final ReactiveQueueService queueService;
     private final ReactiveSubscriptionService subscriptionService;
@@ -59,8 +61,8 @@ public class ReactiveDeliveryConsumer {
     private final Duration pollBlockTimeout;
     private final int concurrency;
     private final Duration httpTimeout;
-    private final List<String> streams;
     private final int perEndpointMaxConcurrency;
+    private final List<String> targetStreams; // streams to consume from
 
     // Metrics
     private final Counter messagesReceived;
@@ -74,7 +76,6 @@ public class ReactiveDeliveryConsumer {
     private final Function<Instant, OffsetDateTime> toOffsetDateTime;
 
     private final ConcurrentHashMap<String, Semaphore> endpointSemaphores = new ConcurrentHashMap<>();
-    //private final int perEndpointMaxConcurrency;
 
     public ReactiveDeliveryConsumer(
             ReactiveQueueService queueService,
@@ -91,7 +92,7 @@ public class ReactiveDeliveryConsumer {
             @Value("${HOSTNAME:delivery-worker-${random.uuid}}") String consumerId,
             @Value("${hookswarm.delivery.poll-batch-size:20}") int pollBatchSize,
             @Value("${hookswarm.delivery.poll-block-timeout-ms:2000}") long pollBlockTimeoutMs,
-            @Value("${hookswarm.delivery.concurrency:10}") int concurrency,
+            @Value("${hookswarm.delivery.concurrency:20}") int concurrency,
             @Value("${hookswarm.delivery.http-timeout-seconds:10}") long httpTimeoutSeconds) {
 
         this.queueService = queueService;
@@ -112,10 +113,17 @@ public class ReactiveDeliveryConsumer {
         this.concurrency = concurrency;
         this.httpTimeout = Duration.ofSeconds(httpTimeoutSeconds);
 
+        var sharding = properties.delivery().sharding();
+        if (sharding.enabled()) {
+            this.targetStreams = new ArrayList<>();
+            for (int i = 0; i < sharding.numberOfShards(); i++) {
+                targetStreams.add(sharding.streamPrefix() + "." + i);
+            }
+        } else {
+            this.targetStreams = List.of(FALLBACK_STREAM);
+        }
         this.perEndpointMaxConcurrency = properties.delivery().perEndpointMaxConcurrency();
-        this.streams = properties.delivery().streams(); // list of streams to consume from
 
-        // Predefine pure funcs
         this.deserializer = this::deserializeTask;
         this.toOffsetDateTime = instant -> OffsetDateTime.ofInstant(instant, ZoneOffset.UTC);
 
@@ -141,8 +149,8 @@ public class ReactiveDeliveryConsumer {
 
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
-        log.info("Starting ReactiveDeliveryConsumer with ID: {}", consumerId);
-        Flux.fromIterable(streams)
+        log.info("Starting ReactiveDeliveryConsumer with ID: {}, streams: {}", consumerId, targetStreams);
+        Flux.fromIterable(targetStreams)
                 .flatMap(stream -> queueService.createGroup(stream, DELIVERY_GROUP))
                 .thenMany(consumeStreams())
                 .subscribe(
@@ -153,7 +161,7 @@ public class ReactiveDeliveryConsumer {
     }
 
     private Flux<Void> consumeStreams() {
-        return Flux.fromIterable(streams)
+        return Flux.fromIterable(targetStreams)
                 .flatMap(stream ->
                         Flux.defer(() -> pollMessages(stream))
                                 .map(msg -> new StreamMessage(stream, msg))
@@ -191,10 +199,6 @@ public class ReactiveDeliveryConsumer {
         });
     }
 
-    /**
-     * Ensure the task exists in the database (inserted by batch writer).
-     * If not found, retry with backoff.
-     */
     private Mono<DeliveryTask> ensureTaskExists(DeliveryTask task) {
         return taskRepository.findById(task.id())
                 .switchIfEmpty(Mono.error(new TaskNotFoundException(task.id())))
@@ -204,9 +208,6 @@ public class ReactiveDeliveryConsumer {
                 .doOnError(e -> log.error("Task {} still missing after retries", task.id()));
     }
 
-    /**
-     * Execute delivery with circuit breaker check
-     */
     private Mono<DeliveryContext> executeDelivery(DeliveryTask task) {
         return subscriptionService.getById(task.subscriptionId())
                 .flatMap(subscription ->
@@ -218,29 +219,26 @@ public class ReactiveDeliveryConsumer {
                 );
     }
 
-    /**
-     * Attempt webhook delivery with per‑endpoint concurrency limiting.
-     */
     private Mono<DeliveryContext> attemptDelivery(DeliveryTask task, Subscription subscription) {
         if (perEndpointMaxConcurrency <= 0) {
             return doAttemptDelivery(task, subscription);
         }
-        String endpointKey = subscription.url(); // or extract host
+        String endpointKey = subscription.url();
         Semaphore semaphore = endpointSemaphores.computeIfAbsent(endpointKey,
                 k -> new Semaphore(perEndpointMaxConcurrency));
         return Mono.using(
                 () -> {
                     try {
                         semaphore.acquire();
-                        return semaphore; // resource is the semaphore itself
+                        return semaphore;
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException(e);
                     }
                 },
-                _ -> doAttemptDelivery(task, subscription), // use the resource (ignored)
-                Semaphore::release // cleanup: release the permit
-        ).subscribeOn(Schedulers.boundedElastic()); // acquisition blocks, so offload
+                s -> doAttemptDelivery(task, subscription),
+                Semaphore::release
+        ).subscribeOn(Schedulers.boundedElastic());
     }
 
     private Mono<DeliveryContext> doAttemptDelivery(DeliveryTask task, Subscription subscription) {
@@ -272,9 +270,6 @@ public class ReactiveDeliveryConsumer {
                 .onErrorResume(error -> handleDeliveryError(task, subscription, start, error));
     }
 
-    /**
-     * Handle successful delivery - parallel DB writes.
-     */
     private Mono<DeliveryContext> handleSuccess(DeliveryContext ctx) {
         OffsetDateTime now = toOffsetDateTime.apply(Instant.now());
 
@@ -303,9 +298,6 @@ public class ReactiveDeliveryConsumer {
                 .thenReturn(ctx);
     }
 
-    /**
-     * Handle failed delivery
-     */
     private Mono<DeliveryContext> handleFailure(DeliveryContext ctx) {
         deliveriesFailure.increment();
         OffsetDateTime now = toOffsetDateTime.apply(Instant.now());
@@ -334,9 +326,6 @@ public class ReactiveDeliveryConsumer {
                 .thenReturn(ctx);
     }
 
-    /**
-     * Move task to dead letter queue.
-     */
     private Mono<Void> moveToDLQ(DeliveryContext ctx, int attempts, OffsetDateTime now) {
         DeadLetterEntry dead = new DeadLetterEntry(
                 UlidGenerator.newUlid(),
@@ -358,9 +347,6 @@ public class ReactiveDeliveryConsumer {
                 .then();
     }
 
-    /**
-     * Schedule retry with exponential backoff.
-     */
     private Mono<Void> scheduleRetry(DeliveryContext ctx, int newAttempt, OffsetDateTime now) {
         return retryPolicy.nextAttemptTime(newAttempt)
                 .flatMap(nextAttempt ->
@@ -373,9 +359,6 @@ public class ReactiveDeliveryConsumer {
                 }).then();
     }
 
-    /**
-     * Handle circuit breaker open state.
-     */
     private Mono<DeliveryContext> handleCircuitOpen(DeliveryTask task, Subscription subscription) {
         circuitBreakerOpens.increment();
         OffsetDateTime now = toOffsetDateTime.apply(Instant.now());
@@ -387,9 +370,6 @@ public class ReactiveDeliveryConsumer {
                 .thenReturn(new DeliveryContext(task, subscription, null));
     }
 
-    /**
-     * Handle delivery errors (timeout, connection refused, etc).
-     */
     private Mono<DeliveryContext> handleDeliveryError(
             DeliveryTask task,
             Subscription subscription,
@@ -406,27 +386,18 @@ public class ReactiveDeliveryConsumer {
         return handleFailure(new DeliveryContext(task, subscription, result));
     }
 
-    /**
-     * Acknowledge message on the stream it came from.
-     */
     private Mono<Void> ackMessage(String stream, QueueMessage message) {
         return queueService.ack(stream, DELIVERY_GROUP, message.id());
     }
 
-    /**
-     * Handle processing errors - move to DLQ without ack.
-     */
     private Mono<Void> handleProcessingError(String stream, QueueMessage message, Throwable error) {
         log.error("Failed to process message {} from stream {}: {}", message.id(), stream, error.getMessage());
 
         return queueService.deadLetter(stream, message.id(), message.body(), error)
                 .doOnError(e -> log.error("Failed to DLQ message {} from stream {}", message.id(), stream, e))
-                .onErrorResume(e -> Mono.empty()); // Don't fail the stream
+                .onErrorResume(e -> Mono.empty());
     }
 
-    /**
-     * Deserialize queue message to delivery task.
-     */
     private Mono<DeliveryTask> deserializeTask(QueueMessage msg) {
         return Mono.defer(() -> {
             Map<String, String> body = msg.body();
@@ -448,9 +419,6 @@ public class ReactiveDeliveryConsumer {
         });
     }
 
-    /**
-     * Create delivery result from HTTP response.
-     */
     private DeliveryResult createResult(int statusCode, String body, long latencyMs) {
         if (statusCode >= 200 && statusCode < 300) {
             return DeliveryResult.success(body, statusCode, latencyMs);
@@ -469,20 +437,12 @@ public class ReactiveDeliveryConsumer {
         }
     }
 
-    // ========== Internal Context Record ==========
-
-    /**
-     * Pairs a stream name with a queue message.
-     */
     private record StreamMessage(String stream, QueueMessage message) {}
 
-    /**
-     * Immutable context for delivery processing.
-     */
     private record DeliveryContext(
             DeliveryTask task,
             Subscription subscription,
             DeliveryResult result
     ) {}
-
 }
+

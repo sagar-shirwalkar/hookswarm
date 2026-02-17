@@ -28,7 +28,7 @@ public class ReactiveDeliveryService {
         this.deadLetterRepository = deadLetterRepository;
     }
 
-    // ---------- Delivery Tasks ----------
+    // Delivery Tasks
     public Mono<DeliveryTask> getTask(String id) {
         return taskRepository.findById(id);
     }
@@ -77,7 +77,7 @@ public class ReactiveDeliveryService {
                 });
     }
 
-    // ---------- Dead Letter Queue ----------
+    // DLQ
     public Mono<PagedResponse<DeadLetterEntry>> listDeadLetters(int page, int size) {
         return deadLetterRepository.findAllWithPagination((long) page * size, size)
                 .collectList()
@@ -99,7 +99,7 @@ public class ReactiveDeliveryService {
                             UlidGenerator.newUlid(),
                             dead.eventId(),
                             dead.subscriptionId(),
-                            "", // url? not stored in DLQ, need to fetch from subscription!
+                            "", // url? not stored in DLQ, need to fetch from subscription
                             "", // secret
                             "", // payload
                             DeliveryStatus.PENDING,

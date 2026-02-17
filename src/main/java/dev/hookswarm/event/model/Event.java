@@ -9,7 +9,7 @@ import java.time.OffsetDateTime;
 public record Event(
         @Id String id,
         String eventType,
-        String payload,          // JSONB – stored as TEXT, driver handles conversion
+        String payload,          // jsonb – stored as text, driver handles conversion
         String idempotencyKey,
         OffsetDateTime createdAt
 ) {}
