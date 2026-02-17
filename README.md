@@ -17,7 +17,7 @@ It is designed to reliably fan out events to thousands of subscribers with subâ€
 
 All of this is achieved with a fully reactive stack, which can deliver high throughput and low latency even on modest hardware.
 
-**[Vue UI is still under development. The entire application is intended to run in one container, with a Caddy reverse proxy]**
+**[Vue UI is still under development]**
 
 ## **Event Lifecycle**
 
