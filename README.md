@@ -19,6 +19,22 @@ All of this is achieved with a fully reactive stack, which can deliver high thro
 
 **[Vue UI is still under development]**
 
+## Deployment
+
+### Development
+
+```bash
+cd docker/docker-compose
+docker-compose up -d
+```
+
+### Production
+
+```bash
+cd docker/docker-compose
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
 ## **Event Lifecycle**
 
 ```mermaid

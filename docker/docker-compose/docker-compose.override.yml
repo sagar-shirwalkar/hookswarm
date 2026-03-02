@@ -1,0 +1,35 @@
+services:
+  frontend-builder:
+    build:
+      context: ../../
+      dockerfile: docker/dev/Dockerfile.frontend
+    container_name: hookswarm-frontend-builder
+    volumes:
+      - ../../frontend:/app
+      - frontend_dist:/app/dist
+      - /app/node_modules
+    networks:
+      - hookswarm-net
+
+  caddy:
+    image: caddy:alpine
+    container_name: hookswarm-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../dev/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - frontend_dist:/usr/share/caddy:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend-builder
+    networks:
+      - hookswarm-net
+
+volumes:
+  frontend_dist:
+  caddy_data:
+  caddy_config:

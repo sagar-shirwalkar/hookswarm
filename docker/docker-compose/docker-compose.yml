@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hookswarm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-hookswarm}
+      POSTGRES_USER: ${POSTGRES_USER:-hookswarm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hookswarm}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hookswarm}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - hookswarm-net
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:latest
+    container_name: hookswarm-dragonfly
+    restart: unless-stopped
+    command:
+      - "--snapshot_cron=*/15 * * * *"
+      - "--maxmemory=4gb"
+      - "--proactor_threads=4"
+      - "--dbfilename=dragonfly"      # no .rdb extension
+      - "--dir=/data"
+    volumes:
+      - dragonfly_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-p", "6379", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - hookswarm-net
+
+  backend:
+    build:
+      context: ../../
+      dockerfile: docker/backend/Dockerfile
+    container_name: hookswarm-backend
+    restart: unless-stopped
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      POSTGRES_DB: ${POSTGRES_DB:-hookswarm}
+      POSTGRES_USER: ${POSTGRES_USER:-hookswarm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hookswarm}
+      DRAGONFLY_HOST: dragonfly
+      DRAGONFLY_PORT: 6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+    networks:
+      - hookswarm-net
+
+volumes:
+  pgdata:
+  dragonfly_data:
+
+networks:
+  hookswarm-net:
+    driver: bridge

@@ -1,0 +1,7 @@
+FROM node:20-alpine
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ .
+# Use ng build --watch to rebuild on changes
+CMD ["npx", "ng", "build", "--watch", "--output-path", "/app/dist", "--delete-output-path", "--poll", "1000"]

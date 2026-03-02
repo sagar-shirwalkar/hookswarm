@@ -1,0 +1,18 @@
+services:
+  caddy:
+    build:
+      context: ../../
+      dockerfile: docker/prod/Dockerfile.frontend
+    container_name: hookswarm-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      - hookswarm-net
+
+  backend:
+    environment:
+      SPRING_PROFILES_ACTIVE: prod

@@ -47,6 +47,7 @@ public class ReactiveDragonflyConfig {
     }
 
     @Bean
+    @Primary
     public ReactiveRedisTemplate<String, String> reactiveRedisTemplate(
             ReactiveRedisConnectionFactory connectionFactory
     ) {

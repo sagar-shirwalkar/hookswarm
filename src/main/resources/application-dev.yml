@@ -8,7 +8,7 @@ spring:
       enabled: true
 
   r2dbc:
-    url: r2dbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hookswarm}
+    url: r2dbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${POSTGRES_DB:hookswarm}
     username: ${POSTGRES_USER:hookswarm}
     password: ${POSTGRES_PASSWORD:hookswarm}
     pool:
@@ -27,22 +27,6 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: true
     validate-on-migrate: true
-
-  data:
-    redis:
-      host: localhost
-      port: ${DRAGONFLY_PORT:6379}
-      password: ${DRAGONFLY_PASSWORD:}
-      database: 0
-      timeout: 2s
-      lettuce:
-        pool:
-          enabled: true
-          max-active: 50
-          max-idle: 20
-          min-idle: 10
-          max-wait: 3s
-        shutdown-timeout: 100ms
 
   jackson:
     time-zone: UTC
@@ -67,22 +51,32 @@ spring.lifecycle:
 
 hookswarm:
   dragonfly:
-    host: localhost
+    host: dragonfly
     port: 6379
     password: ${DRAGONFLY_PASSWORD:}
     database: 0
-    timeout: 2s
+    timeout: 5s
 
   fanout:
+    max-pending-deliveries: 10000
+    large-subscription-threshold: 100
+    normal-stream: deliveries.normal
+    large-stream: deliveries.large
+    backpressure-delay-ms: 100
     poll-batch-size: 20
-    poll-block-timeout-ms: 2000
+    poll-block-timeout-ms: 1500
     concurrency: 4
 
   delivery:
     poll-batch-size: 20
-    poll-block-timeout-ms: 2000
+    poll-block-timeout-ms: 1500
     concurrency: 5
     http-timeout-seconds: 10
+    per-endpoint-max-concurrency: 5
+    sharding:
+      enabled: true
+      number-of-shards: 8
+      stream-prefix: deliveries.shard
 
   retry:
     base-delay-seconds: 10

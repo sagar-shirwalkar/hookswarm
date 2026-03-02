@@ -1,0 +1,10 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build -- --output-path=dist --base-href=/
+
+FROM caddy:alpine
+COPY --from=builder /app/dist /usr/share/caddy
+COPY docker/prod/Caddyfile /etc/caddy/Caddyfile

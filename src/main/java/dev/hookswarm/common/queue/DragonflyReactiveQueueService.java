@@ -1,9 +1,11 @@
 package dev.hookswarm.common.queue;
 
+import io.lettuce.core.RedisCommandTimeoutException;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.*;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
@@ -11,6 +13,7 @@ import org.springframework.data.redis.core.ReactiveStreamOperations;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.HashMap;
@@ -85,29 +88,37 @@ public class DragonflyReactiveQueueService implements ReactiveQueueService {
     }
 
     @Override
-    public Flux<QueueMessage> read(String group, String consumer, String stream, int count, Duration block) {
-        StreamReadOptions options = StreamReadOptions.empty()
-                .count(count)
-                .block(block);
-
-        Timer.Sample sample = Timer.start(meterRegistry);
+    public Flux<QueueMessage> read(String group, String consumer, String stream, int count, Duration blockDuration) {
+        // Shorter block time (e.g., 1 second instead of indefinite)
+        Duration safeBlockDuration = blockDuration.isZero() || blockDuration.getSeconds() > 5
+                ? Duration.ofSeconds(1)  // Max 1 second block
+                : blockDuration;
 
         return streamOps.read(
                         Consumer.from(group, consumer),
-                        options,
+                        StreamReadOptions.empty()
+                                .count(count)
+                                .block(safeBlockDuration),
                         StreamOffset.create(stream, ReadOffset.lastConsumed())
                 )
-                .map(this::toQueueMessage)  // FIX: Convert MapRecord to QueueMessage
-                .doOnComplete(() -> {
-                    sample.stop(readTimer);
-                    if (log.isTraceEnabled()) {
-                        log.trace("Read batch from {}/{}", stream, group);
-                    }
+                .map(this::toQueueMessage)
+                .timeout(Duration.ofSeconds(2))
+                .onErrorResume(QueryTimeoutException.class, e -> {
+                    log.debug("Read timeout on stream {}, returning empty", stream);
+                    return Flux.empty();  // ✅ Return empty on timeout
                 })
-                .doOnError(e -> {
-                    sample.stop(readTimer);
-                    log.error("Failed to read from {}/{}: {}", stream, group, e.getMessage());
-                });
+                .onErrorResume(RedisCommandTimeoutException.class, e -> {
+                    log.warn("Redis command timeout on {}/{}", stream, group);
+                    return Flux.empty();
+                })
+                .onErrorResume(e -> {
+                    log.error("Unexpected error reading from {}/{}: {}", stream, group, e.getMessage());
+                    return Flux.empty();
+                })
+                .retryWhen(Retry.backoff(3, Duration.ofMillis(100))
+                        .maxBackoff(Duration.ofSeconds(1))
+                        .filter(e -> !(e instanceof QueryTimeoutException)));
+
     }
 
     @Override

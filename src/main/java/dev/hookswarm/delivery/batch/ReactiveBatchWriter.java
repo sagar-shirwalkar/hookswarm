@@ -1,6 +1,5 @@
 package dev.hookswarm.delivery.batch;
 
-
 import dev.hookswarm.common.UlidGenerator;
 import dev.hookswarm.common.config.HookSwarmProperties;
 import dev.hookswarm.common.queue.QueueMessage;
@@ -40,7 +39,7 @@ public class ReactiveBatchWriter {
     private final HookSwarmProperties properties;
     private final MeterRegistry meterRegistry;
     private final String consumerId;
-    private final List<String> targetStreams; // streams to consume from
+    private final List<String> targetStreams;
 
     // Batching state
     private final Sinks.Many<StreamMessage> batchSink = Sinks.many().multicast().onBackpressureBuffer();
@@ -59,7 +58,6 @@ public class ReactiveBatchWriter {
         this.meterRegistry = meterRegistry;
         this.consumerId = consumerId;
 
-        // Determine target streams based on sharding configuration
         var sharding = properties.delivery().sharding();
         if (sharding.enabled()) {
             this.targetStreams = new ArrayList<>();
@@ -70,7 +68,7 @@ public class ReactiveBatchWriter {
             this.targetStreams = List.of(FALLBACK_STREAM);
         }
 
-        meterRegistry.gauge("hookswarm.batchwriter.queue.size", batchSink, Sinks.Many::currentSubscriberCount);
+        meterRegistry.gauge("hookswarm.batchwriter.queue.size", batchSink, sink -> sink.currentSubscriberCount());
         meterRegistry.gauge("hookswarm.batchwriter.inflight", inFlightCount, AtomicLong::get);
     }
 
@@ -83,7 +81,6 @@ public class ReactiveBatchWriter {
 
         log.info("Starting ReactiveBatchWriter with streams: {}", targetStreams);
 
-        // Create consumer groups for each stream
         Flux.fromIterable(targetStreams)
                 .flatMap(stream -> queueService.createGroup(stream, BATCH_WRITER_GROUP))
                 .thenMany(consumeStreams())
@@ -93,20 +90,31 @@ public class ReactiveBatchWriter {
                         () -> log.warn("Batch writer completed (should never happen)")
                 );
 
-        // Start the flusher
         startFlusher();
     }
 
     private Flux<Void> consumeStreams() {
         return Flux.interval(Duration.ZERO, properties.batchWriter().flushInterval())
                 .flatMap(tick -> Flux.fromIterable(targetStreams)
-                        .flatMap(stream -> queueService.read(BATCH_WRITER_GROUP, consumerId, stream,
-                                        properties.batchWriter().batchSize(), Duration.ZERO)
-                                .map(message -> new StreamMessage(stream, message)))
-                        .flatMap(this::bufferMessage)
-                        .then(), properties.batchWriter().concurrency())
+                                .flatMap(stream -> queueService.read(
+                                                BATCH_WRITER_GROUP,
+                                                consumerId,
+                                                stream,
+                                                properties.batchWriter().batchSize(),
+                                                Duration.ofMillis(500))
+                                        .map(message -> new StreamMessage(stream, message))
+                                        .onErrorResume(e -> {
+                                            log.debug("Error reading from stream {}: {}", stream, e.getMessage());
+                                            return Flux.empty();
+                                        }))
+                                .flatMap(this::bufferMessage)
+                                .then(),
+                        properties.batchWriter().concurrency())
                 .doOnError(e -> log.error("Error in consumeStreams", e))
-                .retry()
+                .onErrorResume(e -> {
+                    log.error("Fatal error in consumeStreams, restarting...", e);
+                    return Flux.empty();
+                })
                 .repeat();
     }
 
@@ -143,9 +151,9 @@ public class ReactiveBatchWriter {
                 .inConnection(connection -> {
                     // Create the SQL statement with positional parameters
                     String sql = "INSERT INTO delivery_tasks " +
-                    "(id, event_id, subscription_id, url, secret, payload, status, " +
-                    "attempt_count, next_attempt_at, created_at, updated_at) " +
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
+                            "(id, event_id, subscription_id, url, secret, payload, status, " +
+                            "attempt_count, next_attempt_at, created_at, updated_at) " +
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)";
 
                     io.r2dbc.spi.Statement statement = connection.createStatement(sql);
                     // Add each task as a set of parameters
@@ -201,7 +209,5 @@ public class ReactiveBatchWriter {
         );
     }
 
-    // Pairs a stream name with a queue message for acknowledgment
     private record StreamMessage(String stream, QueueMessage message) {}
-
 }
