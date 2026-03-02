@@ -1,6 +1,6 @@
 # **HookSwarm**
 
-HookSwarm is a high-performance webhook delivery system built on **Java 21**, **Spring WebFlux/Netty**, **R2DBC**, and **DragonflyDB** as cache and active queue.
+HookSwarm is a high-performance webhook delivery system built on Java 21, Spring WebFlux/Netty, R2DBC, and DragonflyDB as cache and active queue.
 
 It is designed to reliably fan out events to thousands of subscribers with sub‑100ms latency, while maintaining exactly‑once delivery semantics and surviving downstream failures through intelligent retries, circuit breakers, and a dead‑letter queue.
 
@@ -17,7 +17,7 @@ It is designed to reliably fan out events to thousands of subscribers with sub�
 
 All of this is achieved with a fully reactive stack, which can deliver high throughput and low latency even on modest hardware.
 
-**[Vue UI is still under development]**
+**[UI is still under development]**
 
 ## Deployment
 
