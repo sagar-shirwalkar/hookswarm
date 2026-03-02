@@ -15,6 +15,23 @@ public record HookSwarmProperties(
         CircuitBreaker circuitBreaker,
         Recovery recovery
 ) {
+
+    public HookSwarmProperties(
+            @DefaultValue Fanout fanout,
+            @DefaultValue Delivery delivery,
+            @DefaultValue BatchWriter batchWriter,
+            @DefaultValue Retry retry,
+            @DefaultValue CircuitBreaker circuitBreaker,
+            @DefaultValue Recovery recovery
+    ) {
+        this.fanout = fanout != null ? fanout : new Fanout(20, Duration.ofSeconds(2), 10000, 100, "deliveries.normal", "deliveries.large", Duration.ofMillis(100), 4);
+        this.delivery = delivery != null ? delivery : new Delivery(20, Duration.ofSeconds(2), 20, Duration.ofSeconds(10), 5, new Delivery.Sharding(true, 8, "deliveries.shard"));
+        this.batchWriter = batchWriter != null ? batchWriter : new BatchWriter(true, List.of("deliveries.normal"), 500, Duration.ofMillis(100), 2);
+        this.retry = retry != null ? retry : new Retry(10, 3600, 3, 0.2);
+        this.circuitBreaker = circuitBreaker != null ? circuitBreaker : new CircuitBreaker(5, 60);
+        this.recovery = recovery != null ? recovery : new Recovery(5, 60000, 200);
+    }
+
     public record Fanout(
             @DefaultValue("20") int pollBatchSize,
             @DefaultValue("2s") Duration pollBlockTimeout,
@@ -44,7 +61,7 @@ public record HookSwarmProperties(
 
     public record BatchWriter(
             @DefaultValue("true") boolean enabled,
-            // Deprecate this, replacing with sharding: @DefaultValue({"deliveries.normal"}) List<String> streams,
+            @DefaultValue({"deliveries.normal"}) List<String> streams, // // Deprecate this, replacing with sharding:
             @DefaultValue("500") int batchSize,
             @DefaultValue("100ms") Duration flushInterval,
             @DefaultValue("2") int concurrency

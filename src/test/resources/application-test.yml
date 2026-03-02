@@ -1,0 +1,65 @@
+spring:
+  r2dbc:
+    url: r2dbc:tc:postgresql:///hookswarm?TC_IMAGE_TAG=16-alpine
+    username: test
+    password: test
+  flyway:
+    enabled: true
+    url: jdbc:tc:postgresql:///hookswarm?TC_IMAGE_TAG=16-alpine
+    user: test
+    password: test
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:
+      database: 0
+      timeout: 2s
+      lettuce:
+        pool:
+          enabled: true
+          max-active: 10
+          max-idle: 5
+          min-idle: 2
+          max-wait: 1s
+
+hookswarm:
+  dragonfly:
+    host: localhost
+    port: 6379
+    password:
+    database: 0
+    timeout: 2s
+  # other properties with reduced values for tests
+  fanout:
+    max-pending-deliveries: 100
+    large-subscription-threshold: 5
+    normal-stream: deliveries.normal.test
+    large-stream: deliveries.large.test
+    backpressure-delay-ms: 10
+    poll-batch-size: 5
+    poll-block-timeout-ms: 100
+    concurrency: 2
+  delivery:
+    poll-batch-size: 5
+    poll-block-timeout-ms: 100
+    concurrency: 2
+    http-timeout-seconds: 2
+    per-endpoint-max-concurrency: 2
+    sharding:
+      enabled: true
+      number-of-shards: 2
+      stream-prefix: deliveries.test.shard
+  batch-writer:
+    enabled: true
+    batch-size: 10
+    flush-interval: 50ms
+    concurrency: 1
+  retry:
+    base-delay-seconds: 1
+    max-delay-seconds: 10
+    multiplier: 2
+    jitter-factor: 0.1
+  circuit-breaker:
+    failure-threshold: 2
+    open-duration-seconds: 5

@@ -17,4 +17,10 @@ public interface ReactiveEventRepository extends ReactiveCrudRepository<Event, S
     @Query("SELECT * FROM events ORDER BY created_at DESC LIMIT :limit OFFSET :offset")
     Flux<Event> findAllWithPagination(@Param("limit") int limit, @Param("offset") long offset);
 
+    @Query("INSERT INTO events (id, event_type, payload, idempotency_key, created_at) " +
+            "VALUES (:#{#event.id}, :#{#event.eventType}, :#{#event.payload}, " +
+            ":#{#event.idempotencyKey}, :#{#event.createdAt}) " +
+            "RETURNING *")
+    Mono<Event> insert(Event event);
+
 }

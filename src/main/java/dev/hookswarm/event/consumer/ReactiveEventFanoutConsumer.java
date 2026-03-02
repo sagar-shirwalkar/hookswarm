@@ -118,7 +118,7 @@ public class ReactiveEventFanoutConsumer {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         reactiveQueueService.createGroup(EVENT_STREAM, FANOUT_GROUP)
-                .doOnSuccess(_ -> log.info("Fanout consumer group ready: {}", FANOUT_GROUP))
+                .doOnSuccess(i -> log.info("Fanout consumer group ready: {}", FANOUT_GROUP))
                 .thenMany(consumeStream())
                 .subscribe(
                         null,
@@ -129,7 +129,7 @@ public class ReactiveEventFanoutConsumer {
 
     private Flux<Void> consumeStream() {
         return Flux.defer(this::pollMessages)
-                .doOnNext(_ -> inFlightCount.incrementAndGet())
+                .doOnNext(i -> inFlightCount.incrementAndGet())
                 .flatMapSequential(this::processMessage, concurrency)
                 .doFinally(signalType -> {
                     if (signalType == SignalType.ON_COMPLETE || signalType == SignalType.CANCEL) {
@@ -150,7 +150,7 @@ public class ReactiveEventFanoutConsumer {
                 });
     }
 
-    private Mono<Void> processMessage(QueueMessage message) {
+    Mono<Void> processMessage(QueueMessage message) {
         return fanoutProcessingTime.record(() ->
                 validateEventType(message)
                         .flatMap(eventData -> checkBackpressure().thenReturn(eventData))
@@ -243,7 +243,7 @@ public class ReactiveEventFanoutConsumer {
 
     private Mono<Void> ackMessage(String messageId) {
         return reactiveQueueService.ack(EVENT_STREAM, FANOUT_GROUP, messageId)
-                .doOnSuccess(_ -> log.debug("Acknowledged event message {}", messageId));
+                .doOnSuccess(i -> log.debug("Acknowledged event message {}", messageId));
     }
 
 }

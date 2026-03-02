@@ -1,7 +1,7 @@
 CREATE TABLE events (
     id              VARCHAR(26)   PRIMARY KEY,
     event_type      VARCHAR(255)  NOT NULL,
-    payload         JSONB         NOT NULL,
+    payload         TEXT          NOT NULL,
     idempotency_key VARCHAR(255),
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
 

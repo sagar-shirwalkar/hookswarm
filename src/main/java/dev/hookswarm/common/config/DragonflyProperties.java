@@ -6,9 +6,9 @@ import java.time.Duration;
 
 @ConfigurationProperties(prefix = "hookswarm.dragonfly")
 public record DragonflyProperties(
-        String host,
+        @DefaultValue("dragonfly") String host,
         @DefaultValue("6379") int port,
         String password,
         @DefaultValue("0") int database,
-        @DefaultValue("2s") Duration timeout
+        @DefaultValue("10s") Duration timeout
 ) {}
